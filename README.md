@@ -15,6 +15,19 @@ Parts list:
 - TP4056 Module
 - 18650 battery holder
 
+---
+<p align="center"><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"><b>   ATTENTION   </b><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"></p> 
+
+Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
+
+There are workarounds for that so you don't need to toss your module away, the most popular being removing a diode and/or resistor.
+
+There's a long discussion on the thread below about root cause and possible fixes:
+
+https://forum.arduino.cc/t/zs-042-ds3231-rtc-module/268862/33
+
+---
+
 Libraries:
 
 -	paulstoffregen/Time@^1.6
