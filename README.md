@@ -38,7 +38,7 @@ Libraries:
 -	mikalhart/TinyGPS@0.0.0-alpha+sha.db4ef9c97a
 -	olikraus/U8g2@^2.28.8
 
-Source code base on:
+Source code based on:
 
 - http://w8bh.net/avr/clock2.pdf
 - https://forum.arduino.cc/t/ntp-time-server/192816
