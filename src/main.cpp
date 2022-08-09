@@ -559,7 +559,7 @@ static unsigned long int numberOfSecondsSince1900Epoch(uint16_t y, uint8_t m, ui
 {
   if (y >= 1970)
     y -= 1970;
-  uint16_t days = d;
+  uint16_t days = d - 1;
   for (uint8_t i = 1; i < m; ++i)
     days += pgm_read_byte(daysInMonth + i - 1);
   if (m > 2 && y % 4 == 0)
