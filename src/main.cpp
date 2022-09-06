@@ -127,7 +127,9 @@ void enableWifi()
   // WiFi Initialization
   /* You can remove the password parameter if you want the AP to be open. */
   WiFi.mode(WIFI_AP);
-  WiFi.softAP(ssid, password);
+  // WiFi.softAP(ssid, psk, channel, hidden, max_connection)
+  // Setting maximum of 8 clients, 1 is default channel already, 0 is false for hidden SSID - The maximum allowed by ES8266 is 8 - Thanks to Mitch Markin for that
+  WiFi.softAP(ssid, password, 1, 0, 8);
 
   IPAddress myIP = WiFi.softAPIP();
   DEBUG_PRINT(F("AP IP address: "));
