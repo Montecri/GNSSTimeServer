@@ -4,6 +4,9 @@
 
 WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
+### !! New Dual Display PIR Enabled option. Check on Dual-Display branch !!
+
+
 Parts list:
 
 - Amica NodeMCU (ESP8266 / ESP-12)
