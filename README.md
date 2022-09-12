@@ -4,16 +4,40 @@
 
 WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
+The seoncd OLED display was added to show the client's IP address and when
+the response was sent each time the server receives an NTP request. It also shows 
+how many clients are connected. The second display doesn't have to be present. 
+The code works without it. 
+
+The I2C address of the second OLED display has to be changed by relocating a 
+resistor on its circuit board. It's a tiny surface-mount part and this isn't 
+easy to do. There should be a graphic on the board that shows where the resistor
+should be placed to choose which address you want.
+
+Also use the appropriate U8g2 library constructor for your displays. It's in
+the definitions.h file. SSD1306 displays don't work properly with the SH1106 
+constructor. 
+
+There is provision to turn the displays on and off. This can be done by
+connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
+
+The code is in two files, main.cpp and definitions.h.
+
+A custom enclosure was built for the server using walnut and acrylic. 
+
+![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2780.jpg)
+
 Parts list:
 
 - Amica NodeMCU (ESP8266 / ESP-12)
 - DS3231 RTC
 - Neo-6m V2 GPS
-- 0.96" OLED Display
+- 0.96" OLED Display (x2)
 - Hi-Link 5V/3W
 - Mini-360 DC-DC Buck converter
-- TP4056 Module
-- 18650 battery holder
+- TP4056 Module (optional for portable use)
+- 18650 battery holder (optional for portable use)
+- PIR motion sensor module (optional)
 - Red, Green and Yellow LEDs
 - Resistors (150, 100 and 150 Ohms respectivelly for above leds)
 - Switch key and momentary push button
@@ -45,10 +69,20 @@ Source code based on:
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Dual%20Display.png)
 ![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
+
+This shows the PIR connections to turn the displays on an off.  You can also just connect a SPDT switch 
+to A0 to connect it either to +3.3 volts or ground. If you don't want to turn off the displays either connect A0 permanently to
++3.3 volts or comment out the setPowerSave code in the UpdateDisplay() function in the main.cpp file.
+
 ![PIR_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/PIR.png)
-![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2780.jpg)
+
+Here are some pictures of the inside of the project. This version is AC-powered. It doesn't have to be 
+portablw so the battery power supply wasn't implemented.
+
 ![inside_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2767.JPG)
+
 ![inside_rear_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2771.JPG)
+
 ![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2735.JPG)
 
 https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
