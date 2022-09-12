@@ -1,4 +1,4 @@
-# GPSTimeServer
+# GPSTimeServer - Dual Display
 
 ![ezgif com-gif-maker0](https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif)
 
