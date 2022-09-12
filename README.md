@@ -45,5 +45,6 @@ Source code based on:
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Dual%20Display.png)
 ![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
+![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2780.png)
 
 https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
