@@ -9,10 +9,10 @@ the response was sent each time the server receives an NTP request. It also show
 how many clients are connected. The second display doesn't have to be present. 
 The code works without it. 
 
-The I2C address of the second OLED display has to be changed by relocating a 
-resistor on its circuit board. It's a tiny surface-mount part and this isn't 
+The I2C address of the second OLED display has to be changed from 0x78 to 0x7A. This is done 
+by relocating a resistor on its circuit board. It's a tiny surface-mount part and this isn't 
 easy to do. There should be a graphic on the board that shows where the resistor
-should be placed to choose which address you want.
+should be placed to choose the new address.
 
 Also use the appropriate U8g2 library constructor for your displays. It's in
 the definitions.h file. SSD1306 displays don't work properly with the SH1106 
