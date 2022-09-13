@@ -86,4 +86,5 @@ portable so the battery power supply wasn't implemented. It also uses a switch i
 ![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2735.JPG)
 
 More information about this project can be found here:
+
 https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
