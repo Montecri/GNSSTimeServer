@@ -45,6 +45,7 @@ Parts list:
 - Switch key and momentary push button
 
 ---
+
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"><b>   ATTENTION   </b><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"></p> 
 
 Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
@@ -69,7 +70,11 @@ Source code based on:
 - http://w8bh.net/avr/clock2.pdf
 - https://forum.arduino.cc/t/ntp-time-server/192816
 
+---
+
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Dual%20Display.png)
+
+---
 
 AC/DC power supply
 
@@ -78,6 +83,8 @@ AC/DC power supply
 AC only power supply
 
 ![ac power supply_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Power.png)
+
+---
 
 Motion sensor connections to turn the displays on an off.  You can also just connect a SPDT switch 
 to supply either +3.3 volts or ground to A0. If you don't want to turn off the displays either connect A0 permanently to
