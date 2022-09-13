@@ -6,8 +6,8 @@ WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
 The second OLED display was added to show the client's IP address and when
 the response was sent each time the server receives an NTP request. It also shows 
-how many clients are connected. The second display doesn't have to be present. 
-The code works without it. 
+how many clients are connected. The maximum number of WiFi clients an ESP8266 can handle is eight.
+The second display doesn't have to be present. The code works without it. 
 
 The I2C address of the second OLED display has to be changed from 0x78 to 0x7A. This is done 
 by relocating a resistor on its circuit board. It's a tiny surface-mount part and this isn't 
