@@ -68,7 +68,14 @@ Source code based on:
 - https://forum.arduino.cc/t/ntp-time-server/192816
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Dual%20Display.png)
+
+AC/DC power supply
+
 ![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
+
+AC only power supply
+
+![ac power supply_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Power.png)
 
 This shows the PIR connections to turn the displays on an off.  You can also just connect a SPDT switch 
 to supply either +3.3 volts or ground to A0. If you don't want to turn off the displays either connect A0 permanently to
