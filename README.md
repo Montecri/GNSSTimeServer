@@ -105,6 +105,8 @@ CAD drawing for the enclosure
 
 ![CAD_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Enclosure.PNG)
 
+---
+
 More information about this project can be found here:
 
 https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
