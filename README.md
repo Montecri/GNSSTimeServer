@@ -27,6 +27,8 @@ A custom enclosure was built for the server using walnut and acrylic.
 
 ![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2770.jpg)
 
+![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2849.JPG)
+
 ---
 
 Parts list:
@@ -97,9 +99,11 @@ portable so the battery power supply wasn't implemented. It also uses a switch i
 
 ![inside_rear_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2771.JPG)
 
-![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2849.JPG)
-
 ---
+
+CAD drawing for the enclosure
+
+![CAD_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Enclosure.PNG)
 
 More information about this project can be found here:
 
