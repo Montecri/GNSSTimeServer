@@ -4,7 +4,7 @@
 
 WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
-The seoncd OLED display was added to show the client's IP address and when
+The second OLED display was added to show the client's IP address and when
 the response was sent each time the server receives an NTP request. It also shows 
 how many clients are connected. The second display doesn't have to be present. 
 The code works without it. 
@@ -77,7 +77,7 @@ to A0 to connect it either to +3.3 volts or ground. If you don't want to turn of
 ![PIR_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/PIR.png)
 
 Here are some pictures of the inside of the project. This version is AC-powered. It doesn't have to be 
-portablw so the battery power supply wasn't implemented.
+portable so the battery power supply wasn't implemented. It also uses a switch instead of a PIR to turn the displays on and off.
 
 ![inside_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2767.JPG)
 
