@@ -21,7 +21,10 @@ constructor.
 There is provision to turn the displays on and off. This can be done by
 connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
 
-The code is in two files, main.cpp and definitions.h.
+The code is in two files, main.cpp and definitions.h. More information about this project can be 
+found here:
+
+https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
@@ -84,5 +87,3 @@ portable so the battery power supply wasn't implemented. It also uses a switch i
 ![inside_rear_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2771.JPG)
 
 ![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2735.JPG)
-
-https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
