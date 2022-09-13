@@ -77,11 +77,13 @@ AC only power supply
 
 ![ac power supply_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Power.png)
 
-This shows the PIR connections to turn the displays on an off.  You can also just connect a SPDT switch 
+Motion sensor connections to turn the displays on an off.  You can also just connect a SPDT switch 
 to supply either +3.3 volts or ground to A0. If you don't want to turn off the displays either connect A0 permanently to
 +3.3 volts or comment out the setPowerSave code in the UpdateDisplay() function in the main.cpp file.
 
 ![PIR_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/PIR.png)
+
+---
 
 Here are some pictures of the inside of the project. This version is AC-powered. It doesn't have to be 
 portable so the battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off.
