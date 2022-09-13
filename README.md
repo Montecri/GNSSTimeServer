@@ -27,6 +27,8 @@ A custom enclosure was built for the server using walnut and acrylic.
 
 ![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2780.jpg)
 
+---
+
 Parts list:
 
 - Amica NodeMCU (ESP8266 / ESP-12)
@@ -93,6 +95,8 @@ portable so the battery power supply wasn't implemented. It also uses a switch i
 ![inside_rear_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2771.JPG)
 
 ![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2735.JPG)
+
+---
 
 More information about this project can be found here:
 
