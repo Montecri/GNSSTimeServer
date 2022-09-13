@@ -70,11 +70,7 @@ Source code based on:
 - http://w8bh.net/avr/clock2.pdf
 - https://forum.arduino.cc/t/ntp-time-server/192816
 
----
-
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Dual%20Display.png)
-
----
 
 AC/DC power supply
 
