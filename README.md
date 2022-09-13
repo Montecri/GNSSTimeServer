@@ -25,7 +25,7 @@ The code is in two files, main.cpp and definitions.h.
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
-![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2780.jpg)
+![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2770.jpg)
 
 ---
 
