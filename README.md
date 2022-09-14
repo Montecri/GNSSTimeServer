@@ -7,7 +7,8 @@ WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 The second OLED display was added to so each time an NTP request is received the server can show 
 the client's IP address and when the response was sent. It also shows how many clients are connected. 
 The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
-present. The code works without it. 
+present. The code works without it. The first OLED display shows how many satellites are "in view" and the
+resolution of the fix. It also shows the UTC time and date.
 
 The I2C address of the second OLED display has to be changed from the default 0x78 to 0x7A. This is done 
 by relocating a resistor on its circuit board. It's a tiny surface-mount part and this isn't 
@@ -22,8 +23,7 @@ with the displays you are using.
 
 The pushbutton switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
 The green LED indicates the GPS signals are locked for a good fix. The red LED pulses every second 
-when GPS signals are present. The first OLED display shows how many satellites are "in view" and the
-resolution of the fix. It also shows the UTC time and date.
+when GPS signals are present. 
 
 There is provision to turn the displays on and off. This can be done by
 connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
@@ -31,6 +31,11 @@ connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU.
 The code is in two files, main.cpp in the src directory and definitions.h in the includes directory. 
 It is higly recommended to use PlatformIO to compile it. That way all the libraries needed will be 
 installed automatically. The PlatformIO .ini file is also provided in the src directory.
+
+To use this server, set your clock to connect to WiFi using the SSID and password specified in the code.
+Then set the IP address for the time server it calls to 192.168.4.1. That is the address an ESP8266
+uses when it's in server mode. The server will assign IP addresses to clients on its network starting 
+with 192.168.4.2.
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
