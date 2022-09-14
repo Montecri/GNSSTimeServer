@@ -11,12 +11,14 @@ The second display doesn't have to be present. The code works without it.
 
 The I2C address of the second OLED display has to be changed from 0x78 to 0x7A. This is done 
 by relocating a resistor on its circuit board. It's a tiny surface-mount part and this isn't 
-easy to do. There is a graphic on the board that shows where the resistor
-should be placed to choose the new address.
+easy to do. It requires some delicate desoldering and resoldering. There is a graphic on the 
+board that shows where the resistor should be placed to choose the new address.
 
-Also use the appropriate U8g2 library constructor for your displays. It's in
-the definitions.h file. SSD1306 displays don't work properly with the SH1106 
-constructor. 
+Also the U8g2 library that is used for the OLED displays has many constructors so use the one that is
+appropriate for your displays. The most common 0.96" OLED displays are SSD1306, but there are also
+SH1106 and more. Constructors for SSD1306 and SH1106 are in the definitions.h file. Just comment
+out the constructors you are not using. The library has many more construstors if these don't work 
+with the displays you are using.
 
 There is provision to turn the displays on and off. This can be done by
 connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
