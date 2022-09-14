@@ -4,6 +4,10 @@
 
 WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
+The code is in two files, main.cpp in the src directory and definitions.h in the includes directory. 
+It is higly recommended to use PlatformIO to compile it. That way all the libraries needed will be 
+installed automatically. The platformIO.ini file is also provided in the src directory.
+
 The second OLED display was added to so each time an NTP request is received the server can show 
 the client's IP address and when the response was sent. It also shows how many clients are connected. 
 The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
@@ -28,14 +32,10 @@ when GPS signals are present.
 There is provision to turn the displays on and off. This can be done by
 connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
 
-The code is in two files, main.cpp in the src directory and definitions.h in the includes directory. 
-It is higly recommended to use PlatformIO to compile it. That way all the libraries needed will be 
-installed automatically. The PlatformIO .ini file is also provided in the src directory.
-
-To use this server, set your clock to connect to WiFi using the SSID and password specified in the code.
-Then set the IP address for the time server it calls to 192.168.4.1. That is the address an ESP8266
-uses when it's in server mode. The server will assign IP addresses to clients on its network starting 
-with 192.168.4.2.
+To use this server, set your clock to connect to WiFi using the SSID and password specified in the 
+definitions.h file. Then set the IP address for the time server it calls to 192.168.4.1. That is the 
+address an ESP8266 uses when it's in server mode. The server will assign IP addresses to clients on 
+its network starting with 192.168.4.2.
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
