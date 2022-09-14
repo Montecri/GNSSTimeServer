@@ -17,7 +17,7 @@ board that shows where the resistor should be placed to choose the new address.
 Also the U8g2 library that is used for the OLED displays has many constructors so use the one that is
 appropriate for your displays. The most common 0.96" OLED displays are SSD1306, but there are also
 SH1106 and more. Constructors for SSD1306 and SH1106 are in the definitions.h file. Just comment
-out the constructors you are not using. The library has many more construstors if these don't work 
+out the constructors you are not using. The library has many more constructors if these don't work 
 with the displays you are using.
 
 There is provision to turn the displays on and off. This can be done by
