@@ -28,7 +28,9 @@ resolution of the fix. It also shows the UTC time and date.
 There is provision to turn the displays on and off. This can be done by
 connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
 
-The code is in two files, main.cpp and definitions.h. 
+The code is in two files, main.cpp and definitions.h. It is recommended to use PlatformI) to compile it.
+That way all the libraries needed will automatically be installed. The PlatformIO .ini file is also 
+provided.
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
