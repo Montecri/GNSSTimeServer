@@ -20,6 +20,11 @@ SH1106 and more. Constructors for SSD1306 and SH1106 are in the definitions.h fi
 out the constructors you are not using. The library has many more constructors if these don't work 
 with the displays you are using.
 
+The pushbutton switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
+The green LED indicates the GPS signals are locked for a good fix. The red LED pulses every second 
+when GPS signals are present. The first OLED display shows how many satellites are "in view" and the
+resolution of the fix. It also shows the UTC time and date.
+
 There is provision to turn the displays on and off. This can be done by
 connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
 
