@@ -6,7 +6,7 @@ WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
 The code is in two files, main.cpp in the src directory and definitions.h in the includes directory. 
 It is higly recommended to use PlatformIO to compile it. That way all the libraries needed will be 
-installed automatically. The platformIO.ini file is also provided in the src directory.
+installed automatically. 
 
 The second OLED display was added to so each time an NTP request is received the server can show 
 the client's IP address and when the response was sent. It also shows how many clients are connected. 
