@@ -15,9 +15,9 @@ present. The code works without it. The first OLED display shows how many satell
 resolution of the fix. It also shows the UTC time and date.
 
 The I2C address of the second OLED display has to be changed from the default 0x78 to 0x7A. This is done 
-by relocating a resistor on its circuit board. It's a tiny surface-mount part and this isn't 
-easy to do. It requires some delicate desoldering and resoldering. There is a graphic on the 
-board that shows where the resistor should be placed to choose the new address.
+by relocating a resistor on its circuit board. It's a tiny surface-mount part so it requires some delicate 
+desoldering and resoldering. There is a graphic on the board that shows where the resistor should be placed 
+to choose the new address.
 
 Also the U8g2 library that is used for the OLED displays has many constructors so use the one that is
 appropriate for your displays. The most common 0.96" OLED displays are SSD1306, but there are also
