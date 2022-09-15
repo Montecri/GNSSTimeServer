@@ -14,16 +14,19 @@ The maximum number of WiFi clients an ESP8266 can handle is eight. The second di
 present. The code works without it. The first OLED display shows how many satellites are "in view" and the
 resolution of the fix. It also shows the UTC time and date.
 
-The I2C address of the second OLED display has to be changed from the default 0x78 to 0x7A. This is done 
-by relocating a resistor on its circuit board. It's a tiny surface-mount part so it requires some delicate 
-desoldering and resoldering. There is a graphic on the board that shows where the resistor should be placed 
-to choose the new address.
+The I2C address of the second OLED display has to be changed. For example with the recommended SSD1306 
+displays this means changing it from the default 0x78 to 0x7A. This is done by relocating a resistor 
+on its circuit board. It's a tiny surface-mount part so it requires some delicate desoldering and 
+resoldering. There is a graphic on the board that shows where the resistor should be placed to choose 
+the new address.
 
-Also the U8g2 library that is used for the OLED displays has many constructors so use the one that is
-appropriate for your displays. The most common 0.96" OLED displays are SSD1306, but there are also
-SH1106 and more. Constructors for SSD1306 and SH1106 are in the definitions.h file. Just comment
-out the constructors you are not using. The library has many more constructors if these don't work 
-with the displays you are using.
+SH1106 displays also work but a different constructor from the U8g2 library has to be used. There are 
+constructors for SH1106 displays in the definitions.h file. To use them just comment out the SSD1306 
+constructors and uncomment the SH1106 constructors. You may or may not have to also change the I2C addresses
+specified in the definitions.h file to 0x3C and 0x3D.
+
+Other OLED displays could also be used. The the U8g2 library has many constructors. Just use the 
+constructor and I2C addresses that are appropriate for your displays.
 
 The pushbutton switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
 The green LED indicates the GPS signals are locked for a good fix. The red LED pulses every second 
