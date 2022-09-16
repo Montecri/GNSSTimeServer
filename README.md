@@ -54,7 +54,7 @@ Parts list:
 - DS3231 RTC
 - Neo-6m V2 GPS
 - 0.96" OLED Display (x2) 
-  Be sure they are displays where it's reasonably easy to change the default I2C address, such as SSD1306
+  Be sure they are displays where it's possible to change the default I2C address, such as SSD1306
 - Hi-Link 5V/3W
 - Mini-360 DC-DC Buck converter
 - TP4056 Module (optional for portable use)
@@ -68,7 +68,9 @@ Parts list:
 
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"><b>   ATTENTION   </b><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"></p> 
 
-Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
+Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with 
+a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came 
+with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
 
 There are workarounds for that so you don't need to toss your module away, the most popular being removing a diode and/or resistor.
 
@@ -110,8 +112,8 @@ to supply either +3.3 volts or ground to A0. If you don't want to turn off the d
 
 ---
 
-Here are some pictures of the inside of the project. This version is AC-powered. It doesn't have to be 
-portable so the battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off.
+Here are some pictures of the inside of the project. This version is AC-powered. It doesn't have to be portable so
+the battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off.
 
 ![inside_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2767.JPG)
 
