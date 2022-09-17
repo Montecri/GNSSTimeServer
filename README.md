@@ -22,7 +22,7 @@ the new address.
 
 SH1106 displays also work but a different constructor from the U8g2 library has to be used. There are 
 constructors for SH1106 displays in the definitions.h file. To use them just comment out the SSD1306 
-constructors and uncomment the SH1106 constructors. You may or may not have to also change the I2C addresses
+constructors and uncomment the SH1106 constructors. You also may have to change the I2C addresses
 specified in the definitions.h file to 0x3C and 0x3D.
 
 Other OLED displays could also be used. The the U8g2 library has many constructors. Just use the 
