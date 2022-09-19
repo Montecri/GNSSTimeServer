@@ -53,7 +53,7 @@ Parts list:
 - Amica NodeMCU (ESP8266 / ESP-12)
 - DS3231 RTC
 - Neo-6m V2 GPS
-- 0.96" 128x64 pixel OLED Display (x2) 
+- 0.96" 128x64 OLED Display (x2) 
   Be sure they are displays such as SSD1306 where it's possible to change the default I2C address
 - Hi-Link 5V/3W
 - Mini-360 DC-DC Buck converter
