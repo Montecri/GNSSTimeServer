@@ -34,8 +34,8 @@ The green LED indicates the GPS data is valid and the server's system time is in
 LED pulses every second when GPS signals are present. 
 
 OLED displays wear out if left on for extended periods of time, especially if they continually show 
-information that doesn't change much. So there is provision to turn them off when nobody is there to  
-see them. This can be done by connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
+information that doesn't change much. So there is provision to turn them off when nobody is there to see them. 
+This can be done by connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
 
 To use this server, set your clock to connect to WiFi using the SSID and password specified in the 
 definitions.h file. Then set the IP address for the time server it calls to 192.168.4.1. That is the 
