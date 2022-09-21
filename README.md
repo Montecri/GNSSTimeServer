@@ -30,8 +30,8 @@ Other OLED displays could also be used. The the U8g2 library has many constructo
 constructor and I2C addresses that are appropriate for your displays.
 
 The pushbutton switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
-The green LED indicates the GPS signals are locked for a good fix. The red LED pulses every second 
-when GPS signals are present. 
+The green LED indicates the GPS data is valid and the server's system time is in sync with it. The red 
+LED pulses every second when GPS signals are present. 
 
 OLED displays wear out if left on for extended periods of time, especially if they continually show 
 information that doesn't change much. So there is provision to turn them off when nobody is there to  
