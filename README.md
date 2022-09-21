@@ -8,11 +8,12 @@ The code is in two files, main.cpp in the src directory and definitions.h in the
 It is higly recommended to use PlatformIO to compile it. That way all the libraries needed will be 
 installed automatically. 
 
-The second OLED display was added to so each time an NTP request is received the server can show 
+The second OLED display was added so each time an NTP request is received the server can show 
 the client's IP address and when the response was sent. It also shows how many clients are connected. 
 The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
-present. The code works without it. The first OLED display shows how many satellites are "in view" and the
-resolution of the fix. It also shows the UTC time and date.
+present. The code works without it. But if there are multiple clients it helps to verify they are all
+connected and their NTP requests are being answered. The first OLED display shows how many satellites 
+are "in view" and the resolution of the fix. It also shows the UTC time and date.
 
 The I2C address of the second OLED display has to be changed. For example with the recommended SSD1306 
 displays this means changing it from the default 0x78 to 0x7A. This is done by relocating a resistor 
@@ -32,8 +33,9 @@ The pushbutton switch disables or enables WiFi connectivity. The yellow LED indi
 The green LED indicates the GPS signals are locked for a good fix. The red LED pulses every second 
 when GPS signals are present. 
 
-There is provision to turn the displays on and off. This can be done by
-connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
+OLED displays wear out if left on for extended periods of time, especially if they continually show 
+information that doesn't change much. So there is provision to turn them off when nobody is there to  
+see them. This can be done by connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
 
 To use this server, set your clock to connect to WiFi using the SSID and password specified in the 
 definitions.h file. Then set the IP address for the time server it calls to 192.168.4.1. That is the 
