@@ -114,7 +114,7 @@ to supply either +3.3 volts or ground to A0. If you don't want to turn off the d
 
 ---
 
-Here are some pictures of the inside of the project. This version is AC-powered. It doesn't have to be portable so
+Here are some pictures of the inside of the project. This version doesn't have to be portable so it's AC powered and
 the battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off.
 
 ![inside_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2767.JPG)
