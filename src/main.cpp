@@ -454,7 +454,7 @@ void SyncWithGPS()
     DEBUG_PRINTLN(s);
     adjustTime(1);                     // 1pps signal = start of next second
     syncTime = now();                  // remember time of this sync
-    gpsLocked = true;                  // set flag that time is reflects GPS time
+    gpsLocked = true;                  // set flag that time reflects GPS time
     UpdateRTC();                       // update internal RTC clock periodically
     DEBUG_PRINTLN("GPS synchronized"); // send message to serial monitor   
   }
