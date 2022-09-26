@@ -13,7 +13,7 @@ the client's IP address and when the response was sent. It also shows how many c
 The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
 present. The code works without it. But if there are multiple clients it helps to verify they are all
 connected and their NTP requests are being answered. The first OLED display shows how many satellites 
-are "in view" and the resolution of the fix. It also shows the UTC time and date.
+are "in view" and the resolution of the position reported. It also shows the UTC time and date.
 
 The I2C address of the second OLED display has to be changed. For example with the recommended SSD1306 
 displays this means changing it from the default 0x78 to 0x7A. This is done by relocating a resistor 
@@ -52,7 +52,7 @@ A custom enclosure was built for the server using walnut and acrylic.
 
 Parts list:
 
-- Amica NodeMCU (ESP8266 / ESP-12)
+- Amica NodeMCU (ESP8266 / ESP-12 E)
 - DS3231 RTC
 - Neo-6m V2 GPS
 - 0.96" 128x64 OLED Display (x2) 
@@ -106,9 +106,9 @@ AC only power supply
 
 ---
 
-Motion sensor connections to turn the displays on an off.  You can also just connect a SPDT switch 
+Motion sensor connections to turn the displays on an off.  You can also just connect an SPDT switch 
 to supply either +3.3 volts or ground to A0. If you don't want to turn off the displays either connect A0 permanently to
-+3.3 volts or comment out the setPowerSave code in the UpdateDisplay() function in the main.cpp file.
++3.3 volts or comment out the setPowerSave statements in the UpdateDisplay() function in the main.cpp file.
 
 ![PIR_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/PIR.png)
 
