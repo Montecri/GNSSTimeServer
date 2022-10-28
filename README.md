@@ -130,6 +130,6 @@ CAD drawing for the enclosure
 
 ---
 
-More information about this project can be found here:
+More information about the time server project can be found here:
 
 https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
