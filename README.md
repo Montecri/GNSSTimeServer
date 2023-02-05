@@ -11,7 +11,7 @@ installed automatically.
 The second OLED display was added so each time an NTP request is received the server can show 
 the client's IP address and when the response was sent. It also shows how many clients are connected. 
 The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
-present. The code works without it. But if there are multiple clients it helps to verify they are all
+present. The code works without it, however if there are multiple clients it helps to verify they are all
 connected and their NTP requests are being answered. The first OLED display shows how many satellites 
 are "in view" and the resolution of the position reported. It also shows the UTC time and date.
 
@@ -23,7 +23,7 @@ the new address.
 
 SH1106 displays also work but a different constructor from the U8g2 library has to be used. There are 
 constructors for SH1106 displays in the definitions.h file. To use them just comment out the SSD1306 
-constructors and uncomment the SH1106 constructors. You also may have to change the I2C addresses
+constructors and uncomment the SH1106 constructors. You may also have to change the I2C addresses
 specified in the definitions.h file to 0x3C and 0x3D.
 
 Other OLED displays could also be used. The the U8g2 library has many constructors. Just use the 
