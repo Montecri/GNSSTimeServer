@@ -109,7 +109,5 @@ void IRAM_ATTR Btw();
 void ProcessKeypress();
 void FeedGpsParser();
 void UpdateDisplay();
-uint32_t CalculateNTP(uint16_t y, uint8_t m, uint8_t d, uint8_t h, uint8_t mm, uint8_t s);
-uint32_t numberOfSecondsSince1900Epoch(uint16_t y, uint8_t m, uint8_t d, uint8_t h, uint8_t mm, uint8_t s);
 void ProcessNTP();
 void InitOLED();
