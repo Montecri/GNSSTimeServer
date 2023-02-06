@@ -382,7 +382,9 @@ void SyncWithGPS()
   byte h, m, s, mon, d, hundredths;
   unsigned long age;
   gps.crack_datetime(&y, &mon, &d, &h, &m, &s, NULL, &age); // get time from GPS
-  if (age < 1000 or age > 3000)                             // dont use data older than 1 second
+  // cheise @ Github spotted the uneccessary and wrong '> 3000' condition. Fixed - 20230206
+  //if (age < 1000 or age > 3000)
+  if (age < 1000)                             // dont use data older than 1 second
   {
     setTime(h, m, s, d, mon, y); // copy GPS time to system time
     DEBUG_PRINT("Time from GPS: ");
@@ -488,7 +490,7 @@ void setup()
   Serial.begin(9600); // set serial monitor rate to 9600 bps
 #endif
 
-  Serial.begin(9600);
+  //Serial.begin(9600);
   delay(2000);
   DEBUG_PRINTLN("Iniciado");
 
@@ -556,19 +558,20 @@ const uint8_t daysInMonth[] PROGMEM = {
 
 const unsigned long seventyYears = 2208988800UL; // to convert unix time to epoch
 
+// Replaced with better, less verbose, more elegant timestamp = t + seventyYears calculation, suggested by cheise @ Github - 20230206
 // NTP since 1900/01/01
-static unsigned long int numberOfSecondsSince1900Epoch(uint16_t y, uint8_t m, uint8_t d, uint8_t h, uint8_t mm, uint8_t s)
-{
-  if (y >= 1970)
-    y -= 1970;
-  uint16_t days = d - 1;
-  for (uint8_t i = 1; i < m; ++i)
-    days += pgm_read_byte(daysInMonth + i - 1);
-  if (m > 2 && y % 4 == 0)
-    ++days;
-  days += 365 * y + (y + 3) / 4 - 1;
-  return days * 24L * 3600L + h * 3600L + mm * 60L + s + seventyYears;
-}
+// static unsigned long int numberOfSecondsSince1900Epoch(uint16_t y, uint8_t m, uint8_t d, uint8_t h, uint8_t mm, uint8_t s)
+// {
+//   if (y >= 1970)
+//     y -= 1970;
+//   uint16_t days = d - 1;
+//   for (uint8_t i = 1; i < m; ++i)
+//     days += pgm_read_byte(daysInMonth + i - 1);
+//   if (m > 2 && y % 4 == 0)
+//     ++days;
+//   days += 365 * y + (y + 3) / 4 - 1;
+//   return days * 24L * 3600L + h * 3600L + mm * 60L + s + seventyYears;
+// }
 
 ////////////////////////////////////////
 
@@ -655,7 +658,9 @@ void processNTP()
     //gps.crack_datetime(&year, &month, &day, &hour, &minute, &second, &hundredths, &age);
     //timestamp = numberOfSecondsSince1900Epoch(year,month,day,hour,minute,second);
 
-    timestamp = numberOfSecondsSince1900Epoch(year(t), month(t), day(t), hour(t), minute(t), second(t));
+    //timestamp = numberOfSecondsSince1900Epoch(year(t), month(t), day(t), hour(t), minute(t), second(t));
+    // Better, less verbose, more elegant timestamp calculation, suggested by cheise @ Github - 20230206
+    timestamp = t + seventyYears;
 
 #ifdef DEBUG
     Serial.println(timestamp);
