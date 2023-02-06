@@ -443,7 +443,7 @@ void SyncWithGPS()
   unsigned long age;
   gps.crack_datetime(&y, &mon, &d, &h, &m, &s, NULL, &age); // get time from GPS
 
-  if (age < 1000 or age > 3000)        // dont use data older than 1 second
+  if (age < 1000)        // dont use data older than 1 second
   {
     setTime(h, m, s, d, mon, y);       // copy GPS time to system time
     DEBUG_PRINT("Time from GPS: ");
@@ -525,57 +525,6 @@ void ProcessKeypress()
 }
 
 // --------------------------------------------------------------------------------------------------
-// NTP since 1900/01/01
-
-const uint8_t daysInMonth[] PROGMEM = 
-  { 31, 28, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31 };     // const or compiler complains, the array also has to be global
-
-const uint32_t seventyYears = 2208988800UL;    // to convert Unix time to NTP 
-
-// Mitch's function
-
-uint32_t CalculateNTP(uint16_t y, uint8_t m, uint8_t d, uint8_t h, uint8_t mm, uint8_t s)
-{
-  uint16_t yearsSince1970 = y;                 // calculate the number of years from 1970 to the current year 
-  if (y >= 1970) 
-    yearsSince1970 = y - 1970;  
-
-  uint16_t days = d - 1;                       // start with the number of elapsed days in the current month 
-                                               // don't count the current day, its hours, minutes and seconds will be added later
-  for (uint8_t i = 1; i < m; i++)              // add the days between January 1 and the start of the current month
-    days += pgm_read_byte(daysInMonth + i - 1);
-
-  if ((y % 4 == 0) && m > 2)                   // add a day if the current year is a leap year and the current month is > Feb. 
-    days++;
-
-  days += 365 * yearsSince1970;                // add the days before the current year  
-  days += (yearsSince1970 + 1) / 4;            // add an extra day for each leap year before the current year
-
-  uint32_t secs = days * 24L * 3600L;          // calculate the number of seconds in the total days 
-  secs += (h * 3600L) + (mm * 60L) + s;        // now add the current day's hours, minutes, and seconds 
-                                               // (this is a UNIX Epoch timestamp)
-
-  secs += seventyYears;                        // add the number of seconds before 1970
-  return secs;                                 // return the NTP Epoch timestamp 
-} 
-
-// ziggy's function with date bug fixed
-
-uint32_t numberOfSecondsSince1900Epoch(uint16_t y, uint8_t m, uint8_t d, uint8_t h, uint8_t mm, uint8_t s)
-{  
-  if (y >= 1970) y -= 1970;
-
-  uint16_t days = d - 1;
-
-  for (uint8_t i = 1; i < m; ++i) days += pgm_read_byte(daysInMonth + i - 1);
-
-  if (m > 2 && y % 4 == 0) ++days;
-
-  days += 365 * y + (y + 3) / 4 - 1;
-  return days * 24L * 3600L + h * 3600L + mm * 60L + s + seventyYears;
-}
-
-// --------------------------------------------------------------------------------------------------
 
 void ProcessNTP()
 {
@@ -646,11 +595,12 @@ void ProcessNTP()
     packetBuffer[12] = 0;
     packetBuffer[13] = 0xC;
     packetBuffer[14] = 0;
-
+     
+    const uint32_t seventyYears = 2208988800UL;    // to convert Unix time to NTP 
     uint32_t timestamp, tempval;
     time_t t = now();
     lastFix = t;    
-    timestamp = CalculateNTP(year(t), month(t), day(t), hour(t), minute(t), second(t));
+    timestamp = t + seventyYears;    
     
 
     #ifdef DEBUG
