@@ -12,8 +12,13 @@ The second OLED display was added so each time an NTP request is received the se
 the client's IP address and when the response was sent. It also shows how many clients are connected. 
 The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
 present. The code works without it, however if there are multiple clients it helps to verify they are all
-connected and their NTP requests are being answered. The first OLED display shows how many satellites 
-are "in view" and the resolution of the position reported. It also shows the UTC time and date.
+connected and their NTP requests are being answered. 
+
+Like Cristiano's original version, the first OLED display shows how many satellites 
+are "in view" and the resolution of the position reported. It also shows the UTC time and date. The pushbutton
+switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
+The green LED indicates the GPS data is valid and the server's system time is in sync with it. The red 
+LED pulses every second when GPS signals are present.
 
 The I2C address of the second OLED display has to be changed. For example with the recommended SSD1306 
 displays this means changing it from the default 0x78 to 0x7A. This is done by relocating a resistor 
@@ -27,11 +32,7 @@ constructors and uncomment the SH1106 constructors. You may also have to change 
 specified in the definitions.h file to 0x3C and 0x3D.
 
 Other OLED displays could also be used. The the U8g2 library has many constructors. Just use the 
-constructor and I2C addresses that are appropriate for your displays.
-
-The pushbutton switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
-The green LED indicates the GPS data is valid and the server's system time is in sync with it. The red 
-LED pulses every second when GPS signals are present. 
+constructor and I2C addresses that are appropriate for your displays. 
 
 OLED displays wear out if left on for extended periods of time, especially if they continually show 
 information that doesn't change much. So there is provision to turn them off when nobody is there to see them. 
