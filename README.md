@@ -36,7 +36,8 @@ constructor and I2C addresses that are appropriate for your displays.
 
 OLED displays wear out if left on for extended periods of time, especially if they continually show 
 information that doesn't change much. So there is provision to turn them off when nobody is there to see them. 
-This can be done by connecting a PIR motion sensor or a switch to the A0 pin on the NodeMCU. 
+As suggested by Brett Oliver, this can be done by connecting a PIR motion sensor to the A0 pin on the NodeMCU. 
+A simple switch could also be used. Details are shown below.
 
 To use this server, set your clock to connect to WiFi using the SSID and password specified in the 
 definitions.h file. Then set the IP address for the time server it calls to 192.168.4.1. That is the 
@@ -109,7 +110,7 @@ AC only power supply
 
 Motion sensor connections to turn the displays on an off. Thanks to Brett Oliver who engineered this addition on his version
 of the project. You can also just connect an SPDT switch to supply either +3.3 volts or ground to A0. If you don't want to 
-turn off the displays either connect A0 permanently to +3.3 volts or comment out the setPowerSave statements in the UpdateDisplay() 
+turn off the displays either connect A0 permanently to +3.3 volts or comment out the "setPowerSave" statements in the UpdateDisplay() 
 function in the main.cpp file.
 
 ![PIR_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/PIR.png)
