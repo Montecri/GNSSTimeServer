@@ -4,14 +4,16 @@
    and
    https://forum.arduino.cc/u/ziggy2012/summary
 
-   Mitch Markin, 02.Sep.2022:
-   date bug from ziggy2012 code fixed,
+   Mitch Markin: 
+   02.Sep.2022:
+   date bug from ziggy2012 timestamp code fixed,
    unused variables commented out to clear compiler warnings, 
    Brett Oliver's PIR code addded to turn OLED display on and off,
    got rid of string class in display functions,
    ICACHE_RAM_ATTR changed to IRAM_ADDR to clear compiler warnings,
    added second OLED display for client IP information
-*/
+   08.Feb.2023:
+   removed timestamp calculation functions - not necesssary because timelib calculates it
 
 #include "definitions.h"
 
