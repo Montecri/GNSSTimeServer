@@ -1,6 +1,7 @@
 # GPSTimeServer
 
 ![ezgif com-gif-maker0](https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif)
+![IMG_3050_MOV_AdobeExpress](https://user-images.githubusercontent.com/32185145/219905804-4cf8a894-7308-4913-9f63-5a4edd10f500.gif)
 
 WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
