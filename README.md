@@ -32,9 +32,6 @@ For example SH1106 modules could also be used. Constructors for SH1106 modules a
 To use them comment out the SSD1306 constructors and uncomment the SH1106 constructors. 
 The I2C addresses specified in the code may also need to be changed to 0x3C and 0x3D. 
 
-Other OLED displays could also be used. The the U8g2 library has many constructors. Just use the 
-constructor and I2C addresses that are appropriate for your displays. 
-
 OLED displays wear out if left on for extended periods of time, especially if they continually show 
 information that doesn't change much. So there is provision to turn them off when nobody is there to see them. 
 As suggested by Brett Oliver, this can be done by connecting a PIR motion sensor to the A0 pin on the NodeMCU. 
