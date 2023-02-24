@@ -26,10 +26,11 @@ on its circuit board. It's a tiny surface-mount part so it requires some delicat
 resoldering. There is a graphic on the board that shows where the resistor should be placed to choose 
 the new address.
 
-SH1106 displays also work but a different constructor from the U8g2 library has to be used. There are 
-constructors for SH1106 displays in the definitions.h file. To use them just comment out the SSD1306 
-constructors and uncomment the SH1106 constructors. You may also have to change the I2C addresses
-specified in the definitions.h file to 0x3C and 0x3D.
+The U8g2 library the code uses works with many different OLED displays. 
+You just need to use the constructor from the library and the I2C addresses that match the displays being used.
+For example SH1106 modules could also be used. Constructors for SH1106 modules are included in the definitions.h file. 
+To use them comment out the SSD1306 constructors and uncomment the SH1106 constructors. 
+The I2C addresses specified in the code may also need to be changed to 0x3C and 0x3D. 
 
 Other OLED displays could also be used. The the U8g2 library has many constructors. Just use the 
 constructor and I2C addresses that are appropriate for your displays. 
@@ -103,7 +104,7 @@ Wiring diagrams
 This time server does not have to be portable so it is AC powered only. 
 
 A PIR motion sensor can be connected to A0 on the NodeMCU to automatically turn the OLED displays on only when someone
-is near to see them. Thanks to Brett Oliver who engineered the mod on his version of the project. Alternatively, a simple 
+is near to see them. Thanks to Brett Oliver who engineered the mod on his version of the project. Alternatively, a  
 SPDT switch that connects A0 to either ground or +3.3 volts could be used. If it is not desired to turn the displays off, 
 just connect A0 permanently to +3.3 volts or comment out the "if (PIRvalue < 500)" block of statements in the main.cpp file. 
 
@@ -113,7 +114,7 @@ Breadboard layout
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/sketch_bb.png)
 
-Optional AC/DC power supply
+Optional AC/DC power supply 
 
 ![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
 
