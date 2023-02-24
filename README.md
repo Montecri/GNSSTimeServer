@@ -101,8 +101,8 @@ Wiring diagrams
 This time server does not have to be portable so it is AC powered only. 
 
 A PIR motion sensor can be connected to A0 on the NodeMCU to automatically turn the OLED displays on only when someone
-is near to see them. Thanks to Brett Oliver who engineered the mod on his version of the project. Alternatively, a  
-SPDT switch that connects A0 to either ground or +3.3 volts could be used. If it is not desired to turn the displays off, 
+is near to see them. Thanks to Brett Oliver who engineered the mod on his version of the project. Alternatively, an SPDT 
+switch that connects A0 to either ground or +3.3 volts could be used. If it is not desired to turn the displays off, 
 just connect A0 permanently to +3.3 volts or comment out the "if (PIRvalue < 500)" block of statements in the main.cpp file. 
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Schematic.png)
