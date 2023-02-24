@@ -105,6 +105,8 @@ is near to see them. Thanks to Brett Oliver who engineered the mod on his versio
 switch that connects A0 to either ground or +3.3 volts could be used. If it is not desired to turn the displays off, 
 just connect A0 permanently to +3.3 volts or comment out the "if (PIRvalue < 500)" block of statements in the main.cpp file. 
 
+Schematic diagram
+
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Schematic.png)
 
 Breadboard layout
