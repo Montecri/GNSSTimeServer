@@ -105,7 +105,7 @@ function in the main.cpp file.
 
 Schematic diagram
 
-![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/Schematic.png)
+![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Schematic.png)
 
 Breadboard layout
 
