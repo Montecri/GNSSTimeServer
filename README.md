@@ -96,16 +96,6 @@ Source code based on:
 - http://w8bh.net/avr/clock2.pdf
 - https://forum.arduino.cc/t/ntp-time-server/192816
 
-![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/DualDisplay.png)
-
-AC/DC power supply
-
-![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
-
-AC only power supply
-
-![ac power supply_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Power.png)
-
 ---
 
 Motion sensor connections to turn the displays on an off. Thanks to Brett Oliver who engineered this addition on his version
@@ -113,9 +103,19 @@ of the project. You can also just connect an SPDT switch to supply either +3.3 v
 turn off the displays either connect A0 permanently to +3.3 volts or comment out the "setPowerSave" statements in the UpdateDisplay() 
 function in the main.cpp file.
 
-![PIR_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/PIR.png)
+Schematic diagram
 
----
+![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/Schematic.png)
+
+Breadboard layout
+
+![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/sketch_bb.png)
+
+AC/DC power supply
+
+![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
+
+----
 
 Here are some pictures of the inside of the project. This version doesn't have to be portable so it's AC powered and
 the battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off.
