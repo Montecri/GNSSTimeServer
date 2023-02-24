@@ -98,12 +98,14 @@ Source code based on:
 
 ---
 
-Motion sensor connections to turn the displays on an off. Thanks to Brett Oliver who engineered this addition on his version
-of the project. You can also just connect an SPDT switch to supply either +3.3 volts or ground to A0. If you don't want to 
-turn off the displays either connect A0 permanently to +3.3 volts or comment out the "setPowerSave" statements in the UpdateDisplay() 
-function in the main.cpp file.
+Wiring diagrams
 
-Schematic diagram
+This time server does not have to be portable so it is AC powered only. 
+
+A PIR motion sensor can be connected to A0 on the NodeMCU to automatically turn the OLED displays on only when someone
+is near to see them. Thanks to Brett Oliver who engineered the mod on his version of the project. Alternatively, a simple 
+SPDT switch that connects A0 to either ground or +3.3 volts could be used. If it is not desired to turn the displays off, 
+just connect A0 permanently to +3.3 volts or comment out the "if (PIRvalue < 500)" block of statements in the main.cpp file. 
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Schematic.png)
 
@@ -111,7 +113,7 @@ Breadboard layout
 
 ![sketch_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/sketch_bb.png)
 
-AC/DC power supply
+Optional AC/DC power supply
 
 ![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
 
