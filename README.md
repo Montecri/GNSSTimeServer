@@ -4,21 +4,16 @@
 
 WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
-The code is in two files, main.cpp in the src directory and definitions.h in the includes directory. 
-It is higly recommended to use PlatformIO to compile it. That way all the libraries needed will be 
-installed automatically.
+This version adds a second OLED display to help verify that the server responds to the NTP requests. Every time an NTP request comes 
+in from a client (i.e., a clock connected to the server's WiFi network) its IP address and the time the response was sent are shown 
+on the OLED. The second display is optional, the code posted here runs without it. However with multiple clocks it is a handy 
+way to make sure they are all connected and being served. In server mode, ESP8266 microcontrollers can handle up to eight WiFi clients.
 
-As on Cristiano's original version, the first OLED display shows how many satellites 
+As on the original version, the first OLED display shows how many satellites 
 are "in view" and the resolution of the position reported. It also shows the UTC time and date. The pushbutton
 switch disables or enables WiFi connectivity. The yellow LED indicates WiFi is enabled.
 The green LED indicates the GPS data is valid and the server's system time is in sync with it. The red 
 LED pulses every second when GPS signals are present.
-
-The second OLED display was added so each time an NTP request is received the server can show 
-the client's IP address and when the response was sent. It also shows how many clients are connected. 
-The maximum number of WiFi clients an ESP8266 can handle is eight. The second display doesn't have to be 
-present. The code works without it, however if there are multiple clients it helps to verify they are all
-connected and their NTP requests are being answered. 
 
 The I2C address of the second OLED display has to be changed. For example with the recommended SSD1306 
 displays this means changing it from the default 0x78 to 0x7A. This is done by relocating a resistor 
@@ -41,6 +36,12 @@ To use this server, set your clock to connect to WiFi using the SSID and passwor
 definitions.h file. Then set the IP address for the time server it calls to 192.168.4.1. That is the 
 address an ESP8266 uses when it's in server mode. The server will assign IP addresses to clients on 
 its network starting with 192.168.4.2.
+
+It is highly recommended to use PlatformIO to compile and edit the code. That way all the libraries needed will be 
+downloaded and installed automatically. It is free like the Arduino IDE. However PlatformIO has more professional features 
+that make it easier to develop a project like this once you get the hang of using it. All the files needed for this project 
+have been provided. The code is in two files: definitions.h is in the "includes" directory and main.cpp is in the "src" 
+directory. The platformio.ini file is also provided. 
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
