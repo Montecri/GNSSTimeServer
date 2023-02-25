@@ -45,7 +45,7 @@ directory. The platformio.ini file is also provided.
 
 A custom enclosure was built for the server using walnut and acrylic. 
 
-![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2770.jpg)
+![front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/EnclosureFront.JPG)
 
 ![enclosure_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2849.JPG)
 
