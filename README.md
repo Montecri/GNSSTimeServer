@@ -63,7 +63,7 @@ Parts list:
 - Mini-360 DC-DC Buck converter
 - TP4056 Module (optional for portable use)
 - 18650 battery holder (optional for portable use)
-- HC-SR501 PIR motion sensor module (optional)
+- HC-SR501 PIR motion sensor module or SPDT switch (both are optional)
 - Red, Green and Yellow LEDs
 - Resistors (150, 100 and 150 Ohms respectivelly for above leds)
 - Momentary push button switch
