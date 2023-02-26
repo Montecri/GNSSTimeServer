@@ -76,7 +76,7 @@ Several DS3231 modules being sold today contain a hazardous design flaw in which
 a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came 
 with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
 
-There are workarounds for that so you don not need to toss your module away, the most popular being removing a diode and/or resistor.
+There are workarounds for that so you do not need to toss your module away, the most popular being removing a diode and/or resistor.
 
 There is a long discussion on the thread below about root cause and possible fixes:
 
