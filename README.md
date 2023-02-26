@@ -66,7 +66,7 @@ Parts list:
 - HC-SR501 PIR motion sensor module (optional)
 - Red, Green and Yellow LEDs
 - Resistors (150, 100 and 150 Ohms respectivelly for above leds)
-- Switch key and momentary push button
+- Momentary push button switch
 
 ---
 
