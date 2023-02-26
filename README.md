@@ -24,11 +24,11 @@ See below for more details.
 
 The I2C address of the second OLED display has to be changed. For example with the recommended SSD1306 
 displays this means changing it from the default 0x78 to 0x7A. This is done by relocating a resistor 
-on its circuit board. It's a tiny surface-mount part so it requires some delicate desoldering and 
+on its circuit board. It is a tiny surface-mount part so it requires some delicate desoldering and 
 resoldering. There is a graphic on the board that shows where the resistor should be placed to choose 
 the new address.
 
-The U8g2 library the code uses works with many different OLED displays. You just need to use the constructor from the 
+The U8g2 library that the code uses works with many different OLED displays. You just need to use the constructor from the 
 library and the I2C addresses that match the displays being used. For example SH1106 modules could also be used. 
 Constructors for SH1106 modules are included in the definitions.h file. To use them comment out the SSD1306 constructors
 and uncomment the SH1106 constructors. The I2C addresses specified in the code may also need to be changed to 0x3C and 0x3D. 
@@ -76,9 +76,9 @@ Several DS3231 modules being sold today contain a hazardous design flaw in which
 a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came 
 with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
 
-There are workarounds for that so you don't need to toss your module away, the most popular being removing a diode and/or resistor.
+There are workarounds for that so you don not need to toss your module away, the most popular being removing a diode and/or resistor.
 
-There's a long discussion on the thread below about root cause and possible fixes:
+There is a long discussion on the thread below about root cause and possible fixes:
 
 https://forum.arduino.cc/t/zs-042-ds3231-rtc-module/268862/33
 
