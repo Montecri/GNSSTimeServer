@@ -6,8 +6,9 @@ WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 
 This version adds a second OLED display to help verify that the server responds to the NTP requests. Every time an NTP request comes 
 in from a client (i.e., a clock connected to the server's WiFi network) its IP address and the time the response was sent are shown 
-on the OLED. The second display is optional, the code posted here runs without it. However with multiple clocks it is a handy 
-way to make sure they are all connected and being served. In server mode, ESP8266 microcontrollers can handle up to eight WiFi clients.
+on the OLED. It also shows the total number of clients that are connected. The second display is optional, the code posted here runs 
+without it. However with multiple clocks it is a handy way to make sure they are all connected and being served. In server mode, 
+ESP8266 microcontrollers can handle up to eight WiFi clients.
 
 As on the original version, the first OLED display shows how many satellites 
 are "in view" and the resolution of the position reported. It also shows the UTC time and date. The pushbutton
