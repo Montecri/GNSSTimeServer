@@ -134,7 +134,7 @@ I designed a printed circuit board for the project and had a few made. The Gerbe
 
 ![new_board_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
 
-![Server 2_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
+![Server 2_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Server%2.JPG)
 
 ---
 
