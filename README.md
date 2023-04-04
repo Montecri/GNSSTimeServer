@@ -130,9 +130,11 @@ the battery power supply wasn't implemented. It also uses a switch instead of a 
 
 Update:
 
-I designed a printed circuit board for the project and had a few made.
+I designed a printed circuit board for the project and had a few made. The Gerber files are in the resources folder.
 
 ![new_board_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
+
+![Server 2_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
 
 ---
 
