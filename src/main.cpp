@@ -13,7 +13,7 @@
    ICACHE_RAM_ATTR changed to IRAM_ADDR to clear compiler warnings,
    added second OLED display for client IP information
    08.Feb.2023:
-   removed timestamp calculation functions as suggested by chelese - they are not necesssary because timelib calculates it
+   removed timestamp calculation functions as suggested by cheise - they are not necesssary because timelib calculates it
    04.Apr.2023:
    fixed bugs in NTP packet buffer settings as suggested by sjthespian
 
