@@ -128,6 +128,12 @@ the battery power supply wasn't implemented. It also uses a switch instead of a 
 
 ![inside_rear_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2771.JPG)
 
+Update:
+
+I designed a printed circuit board for the project and had a few made.
+
+![new_board_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
+
 ---
 
 CAD drawing for the enclosure
