@@ -104,6 +104,9 @@ uint8_t statusWifi = 1;
 
 ESP8266WebServer server(80);
 
+// rdate server
+WiFiServer RFC868server(37);
+
 // A UDP instance to let us send and receive packets over UDP
 WiFiUDP udpClient;
 // Create syslogt instance with LOG_DAEMON
@@ -581,7 +584,7 @@ void ShowWifiNetwork()
 
   if (WiFi.getMode() == WIFI_STA)
     wifinet = wifissid;
-    else
+  else
     wifinet = APSSID;
 
   u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
@@ -788,7 +791,7 @@ void setup()
   Serial.begin(9600); // set serial monitor rate to 9600 bps
 #endif
 
-    //Serial.begin(9600);
+  // Serial.begin(9600);
   delay(2000);
 
   syslogserver = readData("/syslogserver"); // Password follows
@@ -830,6 +833,7 @@ void setup()
 
   // Startup UDP
   Udp.begin(NTP_PORT);
+  RFC868server.begin();
 }
 
 void FeedGpsParser()
@@ -898,6 +902,40 @@ const unsigned long seventyYears = 2208988800UL; // to convert unix time to epoc
 // }
 
 ////////////////////////////////////////
+
+// Process rdate request
+// Return the time as the number of seconds since 1/1/1900
+void processRFC868()
+{
+  uint32_t timestamp;
+  WiFiClient client = RFC868server.accept();
+  client.setNoDelay(true);
+
+  if (client.connected())
+  {
+    syslog.logf(LOG_INFO, "RDATE request from %s", client.remoteIP().toString().c_str());
+    // Serial.println(client.remoteIP().toString().c_str());
+
+    // Send Data to connected client
+    time_t t = now(); // get current time
+
+    timestamp = t + seventyYears;
+
+    uint8_t bytes[4];
+
+    // Populate big endian byte array
+    bytes[0] = (timestamp >> 24) & 0xFF;
+    bytes[1] = (timestamp >> 16) & 0xFF;
+    bytes[2] = (timestamp >> 8) & 0xFF;
+    bytes[3] = (timestamp >> 0) & 0xFF;
+
+    client.write((const uint8_t *)bytes, sizeof(timestamp));
+    // Serial.println(timestamp);
+
+    // Disconnect client
+    client.stop();
+  }
+}
 
 void processNTP()
 {
@@ -1090,4 +1128,5 @@ void loop()
     digitalWrite(PPS_LED, LOW);
   server.handleClient();
   processNTP();
+  processRFC868();
 }
