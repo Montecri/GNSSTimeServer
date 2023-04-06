@@ -7,6 +7,19 @@ WiFi enabled GPS fed NTP server based on NodeMCU Amica and Arduino framework
 ### !! New Dual Display PIR Enabled option. Check on Dual-Display branch !!
 https://github.com/Montecri/GPSTimeServer/tree/Dual-Display
 
+Functionalities:
+
+- Internal RTC synched from GPS satellites constellation (backed by CR2032 battery)
+- Dual voltage powered
+- Backup battery for the whole unit (18650)
+- NTP server
+- Wifi functionality as a client or access point
+- Syslog logging
+- Configuration webpage for WiFi and Syslog, saving to persistent storage (LittleFS)
+- Informative display with a timestamp, satellites in view, accuracy, wifi server, IP address
+- Dual function button, short press switch information on display, long press disables WiFi
+- Status at a glance, with dedicated 5mm LEDs for GPS lock, PPS signal, and WiFi status, as well as visible internal leds for charging and GPS module statuses
+
 Parts list:
 
 - Amica NodeMCU (ESP8266 / ESP-12)
@@ -45,6 +58,11 @@ Source code based on:
 
 - http://w8bh.net/avr/clock2.pdf
 - https://forum.arduino.cc/t/ntp-time-server/192816
+
+Contributions from:
+
+@mmarkin
+@sjthespian
 
 ![sketch_bb-menor](https://user-images.githubusercontent.com/38574378/117375890-66f3f400-aea6-11eb-9389-1b9b0b01f88f.png)
 ![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
