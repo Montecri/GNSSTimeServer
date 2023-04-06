@@ -12,7 +12,7 @@ Functionalities:
 - Internal RTC synched from GPS satellites constellation (backed by CR2032 battery)
 - Dual voltage powered
 - Backup battery for the whole unit (18650)
-- NTP server
+- NTP and RDATE (RFC868) protocols supported
 - Wifi functionality as a client or access point
 - Syslog logging
 - Configuration webpage for WiFi and Syslog, saving to persistent storage (LittleFS)
