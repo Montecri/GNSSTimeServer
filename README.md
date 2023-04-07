@@ -121,13 +121,14 @@ Optional AC/DC power supply
 
 ----
 
-Here are some pictures of the inside of the project showing the custom printed circuit board. This version doesn't have to be 
-portable so it's AC powered and the battery power supply wasn't implemented. It also uses a switch instead of a motion sensor 
-to turn the displays on and off. The Gerber files for the circuit board are in the resources folder.
-
-![new_board_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
+A printed circuit board was designed and fabricated for the project. The Gerber files for the board are in the resources folder.
 
 ![server_2_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Server%202.JPG)
+
+Here is a photo of the inside of the project. This version doesn't have to be portable so it's AC powered and the 
+battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off. 
+
+![new_board_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
 
 Here are a couple of pictures of the project built on a protoboard before the printed circuit board was made.
 
