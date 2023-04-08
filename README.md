@@ -21,7 +21,7 @@ WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framew
 
 - Amica NodeMCU (ESP8266 / ESP-12)
 - DS3231 RTC
-- Neo-6m V2 GPS
+- Neo-6m V2 or ATGM336H GPS
 - 0.96" OLED Display
 - Hi-Link 5V/3W
 - Mini-360 DC-DC Buck converter
