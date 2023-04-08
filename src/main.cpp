@@ -68,10 +68,10 @@ void processKeyPress();
 
 // INCLUDES
 #include <SoftwareSerial.h>
-#include <TimeLib.h>   // Time functions  https://github.com/PaulStoffregen/Time
-#include <TinyGPS.h>   // GPS parsing     https://github.com/mikalhart/TinyGPS
-#include <Wire.h>      // OLED and DS3231 necessary
-#include <RtcDS3231.h> // RTC functions
+#include <TimeLib.h>     // Time functions  https://github.com/PaulStoffregen/Time
+#include <TinyGPSPlus.h> // GPS parsing     https://github.com/mikalhart/TinyGPSPlus
+#include <Wire.h>        // OLED and DS3231 necessary
+#include <RtcDS3231.h>   // RTC functions
 
 RtcDS3231<TwoWire> Rtc(Wire);
 EepromAt24c32<TwoWire> RtcEeprom(Wire);
@@ -79,7 +79,7 @@ EepromAt24c32<TwoWire> RtcEeprom(Wire);
 // U8G2_SSD1306_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE); // OLED display library parameters
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE); // OLED display library parameters
 
-TinyGPS gps;
+TinyGPSPlus gps;
 SoftwareSerial ss(D7, D8); // Serial GPS handler
 time_t displayTime = 0;    // time that is currently displayed
 time_t syncTime = 0;       // time of last GPS or RTC synchronization
@@ -124,7 +124,7 @@ word keytick_up = 0;
 int lastState = HIGH; // record last button state to support debouncing
 
 // #define DEBUG // Comment this in order to remove debug code from release version
-//  #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
 #define DEBUG_PRINT(x) Serial.print(x)
@@ -250,15 +250,16 @@ void handleRoot()
   tm *ptm = gmtime(&t);
   strftime(timestr, 32, "%Y-%m-%d %H:%M:%S UTC", ptm);
 
-  int sats = (gps.satellites() != 255) ? gps.satellites() : 0;
-  String resol = gpsLocked ? String(gps.hdop()) : "";
+  int sats = (gps.satellites.value() != 255) ? gps.satellites.value() : 0;
+  String resol = gpsLocked ? String(gps.hdop.value()) : "";
 
   // latitude & longitude
   long lat = 0.0;
   long lng = 0.0;
   if (gpsLocked)
   {
-    gps.get_position(&lat, &lng);
+    lat = gps.location.lat();
+    lng = gps.location.lng();
   }
 
   char form[512] = {0};
@@ -553,8 +554,8 @@ void ShowDateTime(time_t t)
 void ShowSyncFlag()
 {
   String sats = "";
-  if (gps.satellites() != 255)
-    sats = String(gps.satellites());
+  if (gps.satellites.value() != 255)
+    sats = String(gps.satellites.value());
   else
     sats = "0";
 
@@ -565,7 +566,7 @@ void ShowSyncFlag()
 
   String resol = "";
   if (gpsLocked)
-    resol = String(gps.hdop());
+    resol = String(gps.hdop.value());
   else
     resol = "0";
 
@@ -648,9 +649,16 @@ void SyncWithGPS()
   // byte h, m, s, mon, d, hundredths;
   byte h, m, s, mon, d;
   unsigned long age;
-  gps.crack_datetime(&y, &mon, &d, &h, &m, &s, NULL, &age); // get time from GPS
-  // cheise @ Github spotted the uneccessary and wrong '> 3000' condition. Fixed - 20230206
-  // if (age < 1000 or age > 3000)
+  y = gps.date.year();
+  mon = gps.date.month();
+  d = gps.date.day();
+  h = gps.time.hour();
+  m = gps.time.minute();
+  s = gps.time.second();
+  age = gps.location.age();
+  // gps.crack_datetime(&y, &mon, &d, &h, &m, &s, NULL, &age); // get time from GPS
+  //  cheise @ Github spotted the uneccessary and wrong '> 3000' condition. Fixed - 20230206
+  //  if (age < 1000 or age > 3000)
   if (age < 1000) // dont use data older than 1 second
   {
     setTime(h, m, s, d, mon, y); // copy GPS time to system time
@@ -664,7 +672,7 @@ void SyncWithGPS()
     syncTime = now(); // remember time of this sync
     if (!gpsLocked)
     {
-      syslog.logf(LOG_INFO, "GPS sychronized - %d satellites", gps.satellites());
+      syslog.logf(LOG_INFO, "GPS sychronized - %d satellites", gps.satellites.value());
     }
     gpsLocked = true;                  // set flag that time is reflects GPS time
     UpdateRTC();                       // update internal RTC clock periodically
@@ -791,7 +799,7 @@ void setup()
   Serial.begin(9600); // set serial monitor rate to 9600 bps
 #endif
 
-  // Serial.begin(9600);
+  //Serial.begin(9600);
   delay(2000);
 
   syslogserver = readData("/syslogserver"); // Password follows
@@ -847,6 +855,7 @@ void FeedGpsParser()
 #ifdef DEBUG_GPS
     DEBUG_PRINT(c);
 #endif
+    //Serial.print(c);
   }
 }
 
