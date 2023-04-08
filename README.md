@@ -52,8 +52,9 @@ Libraries:
 
 -	paulstoffregen/Time@^1.6
 -	makuna/RTC@^2.3.5
--	mikalhart/TinyGPS@0.0.0-alpha+sha.db4ef9c97a
+-	mikalhart/TinyGPSPlus@^1.0.3
 -	olikraus/U8g2@^2.28.8
+- arcao/Syslog@^2.0.0
 
 Source code based on:
 
