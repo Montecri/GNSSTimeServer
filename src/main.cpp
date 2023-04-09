@@ -254,8 +254,8 @@ void handleRoot()
   String resol = gpsLocked ? String(gps.hdop.value()) : "";
 
   // latitude & longitude
-  long lat = 0.0;
-  long lng = 0.0;
+  float lat = 0.0;
+  float lng = 0.0;
   if (gpsLocked)
   {
     lat = gps.location.lat();
@@ -272,8 +272,8 @@ void handleRoot()
           timestr,
           sats,
           resol.c_str(),
-          (float)lat / 1000000,
-          (float)lng / 1000000,
+          (float)lat,
+          (float)lng,
           form);
   server.send(200, "text/html", webpage);
 }
@@ -561,8 +561,8 @@ void ShowSyncFlag()
 
   if (gpsLocked)
     digitalWrite(LOCK_LED, HIGH);
-  else
-    digitalWrite(LOCK_LED, LOW);
+  // else
+  // digitalWrite(LOCK_LED, LOW);
 
   String resol = "";
   if (gpsLocked)
@@ -799,7 +799,7 @@ void setup()
   Serial.begin(9600); // set serial monitor rate to 9600 bps
 #endif
 
-  //Serial.begin(9600);
+  // Serial.begin(9600);
   delay(2000);
 
   syslogserver = readData("/syslogserver"); // Password follows
@@ -855,7 +855,10 @@ void FeedGpsParser()
 #ifdef DEBUG_GPS
     DEBUG_PRINT(c);
 #endif
-    //Serial.print(c);
+    // Will toggle LOCK_LED at each pass if not locked, so user can see the GPS is actually doing something
+    if (!gpsLocked)
+      digitalWrite(LOCK_LED, !digitalRead(LOCK_LED));
+    // Serial.print(c);
   }
 }
 
