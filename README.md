@@ -16,6 +16,9 @@ WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framew
 - Informative display with a timestamp, satellites in view, accuracy, wifi server, IP address
 - Dual function button, short press switch information on display, long press disables WiFi
 - Status at a glance, with dedicated 5mm LEDs for GPS lock, PPS signal, and WiFi status, as well as visible internal leds for charging and GPS module statuses
+  - Yellow led will be on or off to indicate respective WiFi status
+  - Green led will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
+  - Red led will blink once a second once lock is acquired, in sync with the PPS signal
 
 <b>Parts list:</b>
 
