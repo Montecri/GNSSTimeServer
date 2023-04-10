@@ -33,7 +33,8 @@ WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framew
 - Red, Green and Yellow LEDs
 - Resistors (150, 100 and 150 Ohms respectivelly for above leds)
 - Switch key and momentary push button
-
+- 0.5A/230v fuse
+- 10D561K varistor
 
 <b>Check also the Dual Display PIR Enabled branch option:</b>
 https://github.com/Montecri/GPSTimeServer/tree/Dual-Display
@@ -70,6 +71,7 @@ Contributions from:
 @sjthespian
 
 ![sketch_bb-menor](https://user-images.githubusercontent.com/38574378/117375890-66f3f400-aea6-11eb-9389-1b9b0b01f88f.png)
-![power supply_bb-menor](https://user-images.githubusercontent.com/38574378/117375897-6a877b00-aea6-11eb-8022-d2b06e11bd37.png)
+![power supply - UPDATED_bb-menor](https://user-images.githubusercontent.com/38574378/231014475-e1dc9185-a66d-4c0c-b681-dbc1ae9cf767.png)
+
 
 https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/
