@@ -131,7 +131,7 @@ The push button switch enables or disables the WiFi.
 
 ![new_board_back_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/NewInteriorBack.JPG)
 
-![new_board_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/NewInteriorFront.JPG)
+![new_board_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/NewInteriorFront2.JPG)
 
 
 
