@@ -125,16 +125,12 @@ A printed circuit board was designed and fabricated for the project. The Gerber 
 
 ![server_2_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/Server%202.JPG)
 
-Here is a photo of the inside of the project. This version doesn't have to be portable so it's AC powered and the 
+Here are a couple of photos of the inside of the project. This version doesn't have to be portable so it's AC powered and the 
 battery power supply wasn't implemented. It also uses a switch instead of a motion sensor to turn the displays on and off. 
 
-![new_board_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/New%20Board%20(5).JPG)
+![new_board_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/NewInteriorFront.JPG)
 
-Here are a couple of pictures of the project built on a protoboard before the printed circuit board was made.
-
-![inside_front_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2767.JPG)
-
-![inside_rear_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/IMG_2771.JPG)
+![new_board_back_bb-menor](https://github.com/Montecri/GPSTimeServer/blob/Dual-Display/images/NewInteriorBack.JPG)
 
 ---
 
