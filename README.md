@@ -1,4 +1,4 @@
-# GPSTimeServer
+# Stratum-1 Time Server Built From Scratch - GPSTimeServer
 
 <p align="center"><img src="https://github.com/Montecri/GPSTimeServer/assets/38574378/d716c6b1-41b5-4bbf-84f4-9e0a0178015a"></p> 
 
