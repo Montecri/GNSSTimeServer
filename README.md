@@ -8,7 +8,7 @@ WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framew
 
 <b>Functionalities:</b>
 
-- Internal RTC synched from GPS satellites constellation (backed by CR2032 battery)
+- Internal RTC synched from GNSS (Global Navigation Satellite System) satellites constellation (currently GPS and BeiDou; backed by CR2032 battery)
 - Dual voltage powered
 - Backup battery for the whole unit (18650)
 - NTP and RDATE (RFC868) protocols supported
