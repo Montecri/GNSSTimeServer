@@ -1,6 +1,8 @@
 # GPSTimeServer
 
-![ezgif com-gif-maker0](https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif)
+<p align="center"><img src="https://github.com/Montecri/GPSTimeServer/assets/38574378/d716c6b1-41b5-4bbf-84f4-9e0a0178015a"></p> 
+
+<p align="center"><img src="https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif"></p>
 
 WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framework
 
