@@ -4,8 +4,7 @@
 
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif"></p>
 
-[<p align="center"><img align="center" src="https://img.youtube.com/vi/bdvNMfCw1Pw/maxresdefault.jpg" width="50%" align="center"
-/></p>](https://www.youtube.com/embed/bdvNMfCw1Pw)
+[![Watch the video](https://i.ytimg.com/vi/bdvNMfCw1Pw/hqdefault.jpg)](https://www.youtube.com/watch?v=bdvNMfCw1Pw)
 
 WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framework
 
