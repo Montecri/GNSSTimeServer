@@ -1,4 +1,4 @@
-# Stratum-1 Time Server Built From Scratch - GNSSTimeServer
+# Stratum-1 Time Server Built From Scratch-GNSSTimeServer
 
 <p align="center"><img src="https://github.com/Montecri/GPSTimeServer/assets/38574378/d716c6b1-41b5-4bbf-84f4-9e0a0178015a"></p> 
 
@@ -6,7 +6,7 @@
 
 [![Watch the video](https://i.ytimg.com/vi/bdvNMfCw1Pw/hqdefault.jpg)](https://www.youtube.com/watch?v=bdvNMfCw1Pw)
 
-WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framework
+WiFi enabled, GNSS fed NTP/RDATE server based on NodeMCU Amica and Arduino framework
 
 <b>Functionalities:</b>
 
@@ -35,7 +35,7 @@ WiFi enabled, GPS fed NTP/RDATE server based on NodeMCU Amica and Arduino framew
 - TP4056 Module
 - 18650 battery holder
 - Red, Green and Yellow LEDs
-- Resistors (150, 100 and 150 Ohms respectivelly for above leds)
+- Resistors (150, 100 and 150 Ohms respectively for above leds)
 - Switch key and momentary push button
 - 0.5A/230v fuse
 - 10D561K varistor
@@ -46,11 +46,11 @@ https://github.com/Montecri/GPSTimeServer/tree/Dual-Display
 ---
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"><b>   ATTENTION   </b><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"></p> 
 
-Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came with a LIR2032 battery (rechargeable), the module being fed with 5v will generate an unsafe charging voltage for that battery.
+Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came with a LIR2032 battery (rechargeable), the module is fed with 5v will generate an unsafe charging voltage for that battery.
 
 There are workarounds for that so you don't need to toss your module away, the most popular being removing a diode and/or resistor.
 
-There's a long discussion on the thread below about root cause and possible fixes:
+There's a long discussion on the thread below about the root cause and possible fixes:
 
 https://forum.arduino.cc/t/zs-042-ds3231-rtc-module/268862/33
 
