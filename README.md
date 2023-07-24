@@ -8,6 +8,8 @@
 
 WiFi enabled, GNSS fed NTP/RDATE server based on NodeMCU Amica and Arduino framework
 
+🎖️ Featured by [Hackaday](https://hackaday.com/2021/07/25/portable-gps-time-server-powered-by-the-esp8266/)
+
 <b>Functionalities:</b>
 
 - Internal RTC synched from GNSS (Global Navigation Satellite System) satellites constellation (currently GPS and BeiDou; backed by CR2032 battery)
