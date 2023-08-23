@@ -4,47 +4,64 @@
 
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif"></p>
 
-[![Watch the video](https://i.ytimg.com/vi/bdvNMfCw1Pw/hqdefault.jpg)](https://www.youtube.com/watch?v=bdvNMfCw1Pw)
+[![Watch the video](https://i.ytimg.com/vi/bdvNMfCw1Pw/hqdefault.jpg)](https://www.youtube.com/watch?v=bdvNMfCw1Pw) - [![Watch the video](https://i.ytimg.com/vi/qk_Gvh3UzQg/hqdefault.jpg)](https://www.youtube.com/watch?v=qk_Gvh3UzQg)
 
-WiFi enabled, GNSS fed NTP/RDATE server based on NodeMCU Amica and Arduino framework
+## WiFi enabled, GNSS fed, NTP/RDATE server based on ESP8266/ESP32 and Arduino
 
+<br>
 
 🎖️ Featured by [Hackaday](https://hackaday.com/2021/07/25/portable-gps-time-server-powered-by-the-esp8266/)
 
 🎖️ Selected for [Maker Faire Rome 2023](https://makerfairerome.eu/en/)
 
+<br>
 
 <b>Functionalities:</b>
 
 - Internal RTC synched from GNSS (Global Navigation Satellite System) satellites constellation (currently GPS and BeiDou; backed by CR2032 battery)
+- RTOS multi-tasking (when used with ESP32); core tasks (GNSS synching, Clock updating, processing NTP/RFC868 requests) running with a higher priority than common tasks (display update, PPS led blinking, web page serving)
+- Rich dashboard with information about MCU, RTC, GNSS, WiFi (uptime, free heap, minimum heap, temperature, version, ip, mac address, network name, network type, signal strength, timestamp lat, long, lock status, sats, precision, etc)
+- Highly optimized web page (minimalistic, embedded graphics, gzip-compressed - Python conversion/compression script supplied), requiring a password for critical functions
+- Over-The-Air (OTA) Web Based firmware upgrade
 - Dual voltage powered
 - Backup battery for the whole unit (18650)
 - NTP and RDATE (RFC868) protocols supported
-- Wifi functionality as a client or access point
+- WiFi functionality as a client or access point
 - Syslog logging
 - Configuration webpage for WiFi and Syslog, saving to persistent storage (LittleFS)
-- Informative display with a timestamp, satellites in view, accuracy, wifi server, IP address
+- Informative display with a timestamp, satellites in view, accuracy, WiFi server, IP address
 - Dual function button, short press switch information on display, long press disables WiFi
 - Status at a glance, with dedicated 5mm LEDs for GPS lock, PPS signal, and WiFi status, as well as visible internal leds for charging and GPS module statuses
   - Yellow led will be on or off to indicate respective WiFi status
   - Green led will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
   - Red led will blink once a second once lock is acquired, in sync with the PPS signal
 
+> [!NOTE]
+> Please note that some functionalities are available only on ESP32, due to either ESP8266 limitation or the functionality not being backported yet.
+
 <b>Parts list:</b>
 
-- Amica NodeMCU (ESP8266 / ESP-12)
+- Amica NodeMCU (ESP8266 / ESP-12) or ESP32Duino (ESP32-WROOM-32)
 - DS3231 RTC
 - Neo-6m V2 or ATGM336H GPS
 - 1.3" SH1106 OLED Display
-- Hi-Link 5V/3W
-- Mini-360 DC-DC Buck converter
-- TP4056 Module
-- 18650 battery holder
+- For mains powered:
+  - Hi-Link 5V/3W
+  - Mini-360 DC-DC Buck converter
+  - TP4056 Module
+  - 18650 battery holder
+- For power adapter powered:
+  - 18650 battery shield
+  - 5.5mm x 2.1 mm or any other suitable socket
 - Red, Green and Yellow LEDs
 - Resistors (150, 100 and 150 Ohms respectively for above leds)
 - Switch key and momentary push button
 - 0.5A/230v fuse
 - 10D561K varistor
+
+<b>New dashboard screenshot:</b>
+<p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/c2b418d3-9c57-4498-8c56-a7258ae198d4"></p>
+
 
 <b>Check also the Dual Display PIR Enabled branch option:</b>
 https://github.com/Montecri/GPSTimeServer/tree/Dual-Display
