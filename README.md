@@ -68,7 +68,7 @@
 <p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/c2b418d3-9c57-4498-8c56-a7258ae198d4" width=60%></p>
 
 <b>And the new 3D printable case:</b>
-<p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/2fdcd3c9-9cf2-470a-b5c6-16f1ed4b2a65" width=60%></p>
+<p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/15880404-a610-4608-9146-c4bb9b7f2ab2" width=60%></p>
 
 <br/><br/>
 <br/><br/>
