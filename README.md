@@ -4,11 +4,12 @@
 
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif"></p>
 
-<a href="http://www.youtube.com/watch?feature=player_embedded&v=bdvNMfCw1Pw" target="_blank">
+
+<p align="center"><a href="http://www.youtube.com/watch?feature=player_embedded&v=bdvNMfCw1Pw" target="_blank">
  <img src="http://img.youtube.com/vi/bdvNMfCw1Pw/mqdefault.jpg" alt="Watch the video" width="320" border="10" />
 </a> - <a href="http://www.youtube.com/watch?feature=player_embedded&v=qk_Gvh3UzQg" target="_blank">
  <img src="http://img.youtube.com/vi/qk_Gvh3UzQg/mqdefault.jpg" alt="Watch the video" width="320" border="10" />
-</a>
+</a></p>
 
 ## WiFi enabled, GNSS fed, NTP/RDATE server based on ESP8266/ESP32 and Arduino
 
