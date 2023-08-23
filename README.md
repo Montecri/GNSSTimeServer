@@ -65,8 +65,13 @@
 - 10D561K varistor
 
 <b>New dashboard screenshot:</b>
-<p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/c2b418d3-9c57-4498-8c56-a7258ae198d4"></p>
+<p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/c2b418d3-9c57-4498-8c56-a7258ae198d4" width=60%></p>
 
+<b>And the new 3D printable case:</b>
+<p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/2fdcd3c9-9cf2-470a-b5c6-16f1ed4b2a65" width=60%></p>
+
+<br/><br/>
+<br/><br/>
 
 <b>Check also the Dual Display PIR Enabled branch option:</b>
 https://github.com/Montecri/GPSTimeServer/tree/Dual-Display
