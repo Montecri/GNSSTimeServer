@@ -10,6 +10,7 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
+//#include <esp_wifi.h>
 
 // State data
 #include <LittleFS.h>
@@ -30,10 +31,55 @@ WiFiUDP Udp;
 // Syslog support
 #include <Syslog.h>
 
-/* Create a WiFi access point and provide a web server on it. */
+// Main Web Page
+// #include "index.h"
+#include "index_bytearray.h"
+
+#if defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266WiFi.h>
-#include <WiFiClient.h>
 #include <ESP8266WebServer.h>
+#include <SoftwareSerial.h>
+
+ESP8266WebServer server(80);
+SoftwareSerial ss(D7, D8); // Serial GPS handler
+#define PPS_LED 10
+#define LOCK_LED 0U      // ESP8266 D3
+#define WIFI_BUTTON 2U // ESP8266 D4
+#elif defined(ESP32)
+#include "WiFi.h"
+#include <HardwareSerial.h>
+#include <WebServer.h>
+// Web OTA Upgrade
+#include <Update.h>
+
+HardwareSerial ss(2);
+WebServer server(80);
+#define PPS_LED 27
+#define LOCK_LED 19
+#define WIFI_BUTTON 5
+
+// Priority tasks
+// TaskHandle_t FGP; // FeedGPSParser
+// TaskHandle_t SC;  // SyncCheck
+// TaskHandle_t PN;  // ProcessNTP
+// TaskHandle_t PR;  // ProcessRFC868
+
+// Required for temperature reading
+#ifdef __cplusplus
+extern "C"
+{
+#endif
+  uint8_t temprature_sens_read();
+#ifdef __cplusplus
+}
+#endif
+uint8_t temprature_sens_read();
+#else
+#error Unknown architecture
+#endif
+
+/* Create a WiFi access point and provide a web server on it. */
+#include <WiFiClient.h>
 #include <RtcUtility.h>
 #include <EepromAT24C32.h> // We will use clock's eeprom to store config
 
@@ -44,30 +90,34 @@ void processKeyHold();
 void processKeyPress();
 
 // GLOBAL DEFINES
-#define HOSTNAME "ESP-NTP-Server" // Hostname used for syslog and DHCP
-#define WIFIRETRIES 15            // Max number of wifi retry attempts
-#define APSSID "GPSTimeServer"    // Default AP SSID
-#define APPSK "thereisnospoon"    // Default password
-#define PPS_PIN D6                // Pin on which 1PPS line is attached
-#define SYNC_INTERVAL 10          // time, in seconds, between GPS sync attempts
-#define SYNC_TIMEOUT 30           // time(sec) without GPS input before error
+#define HOSTNAME "ESP-Time-Server" // Hostname used for syslog and DHCP
+#define WIFIRETRIES 15             // Max number of wifi retry attempts
+//#define APSSID "GNSSTimeServer"    // Default AP SSID
+//#define APPSK "thereisnospoon"     // Default password
+#define PPS_PIN 12U                // ESP8266 D6 - Pin on which 1PPS line is attached
+#define SYNC_INTERVAL 10           // time, in seconds, between GPS sync attempts
+#define SYNC_TIMEOUT 30            // time(sec) without GPS input before error
 // #define RTC_UPDATE_INTERVAL    SECS_PER_DAY             // time(sec) between RTC SetTime events
 #define RTC_UPDATE_INTERVAL 30 // time(sec) between RTC SetTime events
 #define PPS_BLINK_INTERVAL 50  // Set time pps led should be on for blink effect
 // #define SYSLOG_SERVER "x.x.x.x" // syslog server name or IP
 #define SYSLOG_PORT 514 // syslog port
 
-#define LOCK_LED D3
-#define PPS_LED 10
-#define WIFI_LED D5
-#define WIFI_BUTTON D4
+const char *www_username = "admin";
+const char *www_password = "esp32";
+// allows you to set the realm of authentication Default:"Login Required"
+const char *www_realm = "Custom Auth Realm";
+// the Content of the HTML response in case of Unautherized Access Default:empty
+String authFailResponse = "Authentication Failed";
+const char *serverUpdate = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+
+#define WIFI_LED 14U     // ESP8266 D5
 #define BTN_HOLD_MS 2000 // Number of milliseconds to determine button being held
 #define BTN_NONE 0       // No button press
 #define BTN_PRESS 1      // Button pressed for < BTN_HOLD_MS
 #define BTN_HOLD 2       // Button held for at least BTN_HOLD_MS
 
 // INCLUDES
-#include <SoftwareSerial.h>
 #include <TimeLib.h>     // Time functions  https://github.com/PaulStoffregen/Time
 #include <TinyGPSPlus.h> // GPS parsing     https://github.com/mikalhart/TinyGPSPlus
 #include <Wire.h>        // OLED and DS3231 necessary
@@ -80,29 +130,28 @@ EepromAt24c32<TwoWire> RtcEeprom(Wire);
 U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/U8X8_PIN_NONE); // OLED display library parameters
 
 TinyGPSPlus gps;
-SoftwareSerial ss(D7, D8); // Serial GPS handler
-time_t displayTime = 0;    // time that is currently displayed
-time_t syncTime = 0;       // time of last GPS or RTC synchronization
-time_t lastSetRTC = 0;     // time that RTC was last set
-volatile int pps = 0;      // GPS one-pulse-per-second flag
-time_t dstStart = 0;       // start of DST in unix time
-time_t dstEnd = 0;         // end of DST in unix time
-bool gpsLocked = false;    // indicates recent sync with GPS
-int currentYear = 0;       // used for DST
-int displaynum = 0;        // Display pane currently displayed
-#define NUMDISPLAYPANES 2  // Number of display panes available
+
+time_t displayTime = 0;     // time that is currently displayed
+time_t syncTime = 0;        // time of last GPS or RTC synchronization
+time_t lastSetRTC = 0;      // time that RTC was last set
+volatile int pps = 0;       // GPS one-pulse-per-second flag
+time_t dstStart = 0;        // start of DST in unix time
+time_t dstEnd = 0;          // end of DST in unix time
+bool gpsLocked = false;     // indicates recent sync with GPS
+bool buttonPressed = false; // To process button presses outside the ISR
+int currentYear = 0;        // used for DST
+int displaynum = 0;         // Display pane currently displayed
+#define NUMDISPLAYPANES 2   // Number of display panes available
 
 long int pps_blink_time = 0;
 
 /* Set these to your desired credentials. */
-const char *ssid = APSSID;
-const char *password = APPSK;
+const char *ssid = "GNSSTimeServer";
+const char *password = "thereisnospoon";
 String wifissid;
 String wifipassword;
 String syslogserver;
 uint8_t statusWifi = 1;
-
-ESP8266WebServer server(80);
 
 // rdate server
 WiFiServer RFC868server(37);
@@ -123,13 +172,24 @@ word keytick_down = 0; // record time of keypress
 word keytick_up = 0;
 int lastState = HIGH; // record last button state to support debouncing
 
-// #define DEBUG // Comment this in order to remove debug code from release version
-// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+//#define DEBUG // Comment this in order to remove debug code from release version
+//#define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
+#if defined(ARDUINO_ARCH_ESP8266)
 #define DEBUG_PRINT(x) Serial.print(x)
 #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
 #define DEBUG_PRINTLN(x) Serial.println(x)
+#elif defined(ESP32)
+#define DEBUG_PRINT(x) Serial.print(String(xPortGetCoreID()) + " - " + String(x))
+#define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
+#define DEBUG_PRINTLN(x) Serial.println(String(xPortGetCoreID()) + " - " + String(x))
+                      // #define DEBUG_PRINT(x) Serial.print(x)
+                      // #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
+                      // #define DEBUG_PRINTLN(x) Serial.println(x)
+#else
+#error Unknown architecture
+#endif
 #else
 #define DEBUG_PRINT(x)
 #define DEBUG_PRINTDEC(x)
@@ -222,6 +282,10 @@ void writeData(const char *filename, String data)
 
 void handleUpdate()
 {
+  if (!server.authenticate(www_username, www_password))
+    {
+      return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
+    }
   wifissid = server.arg("wifi_ssid");
   wifipassword = server.arg("wifi_psk");
   syslogserver = server.arg("syslog_server");
@@ -240,8 +304,60 @@ void handleUpdate()
   server.send(200, "text/html", content);
 }
 
-void handleRoot()
+void timeToString(char *string, size_t size, int seconds)
 {
+  int days = seconds / 86400;
+  seconds %= 86400;
+  byte hours = seconds / 3600;
+  seconds %= 3600;
+  byte minutes = seconds / 60;
+  seconds %= 60;
+  snprintf(string, size, "%04d:%02d:%02d:%02d", days, hours, minutes, seconds);
+}
+
+String getMacAddress(int mt)
+{
+  uint8_t baseMac[6] = {0};
+
+// Get MAC address for WiFi station
+// ESP_MAC_WIFI_SOFTAP
+// ESP_MAC_WIFI_STA
+#if defined(ESP32)
+  esp_read_mac(baseMac, ESP_MAC_WIFI_STA);
+#endif
+
+  char baseMacChr[18] = {0};
+  sprintf(baseMacChr, "%02X:%02X:%02X:%02X:%02X:%02X", baseMac[0], baseMac[1], baseMac[2], baseMac[3], baseMac[4], baseMac[5]);
+
+  String macAddress = String(baseMacChr);
+  // Serial.println(baseMacChr);
+  return macAddress;
+}
+
+// String getSSID() {
+//   wifi_config_t conf;
+//   esp_wifi_get_config(WIFI_IF_STA, &conf);
+//   return String(reinterpret_cast<const char*>(conf.sta.ssid));
+// }
+
+String convS(const char * a) {
+    int i;
+    
+    String res = "";
+    i = 0;
+    while (a[i]!='\0') {
+    //for (i = 0; i < arr_size; i++) {
+        res = res + a[i];
+        i++;
+    }
+    return res;
+}
+
+// void handleRoot()
+void handleJSON()
+{
+  syslog.logf(LOG_INFO, "JSON requested from %s", server.client().remoteIP().toString().c_str());
+
   char webpage[2048];
   char timestr[32];
 
@@ -262,26 +378,171 @@ void handleRoot()
     lng = gps.location.lng();
   }
 
-  char form[512] = {0};
-  //  if (WiFi.getMode() == WIFI_AP) {
-  sprintf(form, "<hr/><h3>Settings</h3><form action=\"updatewifi\">Syslog server: <input type=\"text\" name=\"syslog_server\" value=\"%s\"><br/>SSID: <input type=\"text\" name=\"wifi_ssid\" value=\"%s\"><br/>Password: <input type=\"password\" name=\"wifi_psk\"><br/><input type=\"submit\"></form>", syslogserver.c_str(), wifissid.c_str());
-  //  }
+  IPAddress myIP = WiFi.localIP();
+  if (myIP[0] == 0)
+    myIP = WiFi.softAPIP();
+
+  String wifinet = "";
+  String mcaddr = "";
+  String wifmode = "";
+  int signal = 0;
+  if (WiFi.getMode() == WIFI_STA)
+  {
+    wifmode = "Station";
+    wifinet = wifissid;
+    signal = WiFi.RSSI();
+#if defined(ESP32)
+    mcaddr = getMacAddress(ESP_MAC_WIFI_STA);
+#endif
+  }
+  else
+  {
+    wifmode = "Access Point";
+    wifinet = convS(ssid);
+    signal = 0;
+#if defined(ESP32)
+    mcaddr = getMacAddress(ESP_MAC_WIFI_SOFTAP);
+#endif
+  }
+
+char uptime[15] = "";
+#if defined(ESP32)
+  timeToString(uptime, sizeof(uptime), esp_timer_get_time() / 1000000);
+#endif
+
+  String uptimeStr(uptime);
+
+  int freeHeap = 0;
+  int minimumHeap = 0;
+  String idfVersion = "";
+  float internalTemp = 0.0;
+#if defined(ESP32)
+  freeHeap = esp_get_free_heap_size() / 1024;
+  minimumHeap = esp_get_minimum_free_heap_size() / 1024;
+  idfVersion = esp_get_idf_version();
+  internalTemp = (temprature_sens_read() - 32) / 1.8; // Temp is only correctly captured when WiFi active, ottherwise will always return 128 F (53.33 C)
+#endif
+
+  String locked = gpsLocked ? "True" : "False";
+
+  // RTC Data
+  String validDateTime = Rtc.IsDateTimeValid() ? "True" : "False";
+  String isRTCRunning = Rtc.GetIsRunning() ? "True" : "False";
+  // RtcDateTime Now = Rtc.GetDateTime();
+  int8_t AgingOffset = Rtc.GetAgingOffset();
+  float RTCTemperature = Rtc.GetTemperature().AsFloatDegC();
 
   sprintf(webpage,
-          "<html><head><title>NTP Server</title></head><body><h1>%s</h1>Satellites: %d  Resolution: %s<h3>Location</h3>Latitude: %7.4f, Longitude: %7.4f<br/>%s</body></html>",
+          "{\"version\":\"%s\", \"uptime\":\"%s\", \"freeheap\":\"%d\", \"ip\":\"%s\", \"network\":\"%s\", \"type\":\"%s\",\
+           \"signal\":\"%d\", \"timestamp\":\"%s\", \"lat\":\"%7.8f\", \"lon\":\"%7.8f\", \"sats\":\"%d\", \"hdop\":\"%s\",\
+            \"syslog\":\"%s\", \"ssid\":\"%s\", \"minimumheap\":\"%d\", \"idfversion\":\"%s\", \"internaltemp\":\"%.1f\",\
+             \"macaddress\":\"%s\", \"locked\":\"%s\", \"validdatetime\":\"%s\", \"rtcrunning\":\"%s\", \"agingoffset\":\"%d\",\
+              \"rtctemperature\":\"%.1f\"}",
+          "2.0h",
+          uptimeStr.c_str(),
+          freeHeap,
+          myIP.toString().c_str(),
+          wifinet.c_str(),
+          wifmode,
+          signal,
           timestr,
-          sats,
-          resol.c_str(),
           (float)lat,
           (float)lng,
-          form);
+          sats,
+          resol,
+          syslogserver.c_str(),
+          wifissid.c_str(),
+          minimumHeap,
+          idfVersion,
+          internalTemp,
+          mcaddr.c_str(),
+          locked,
+          validDateTime,
+          isRTCRunning,
+          AgingOffset,
+          RTCTemperature);
   server.send(200, "text/html", webpage);
+}
+
+void handleRoot()
+{
+  const char *dataType = "text/html";
+
+  syslog.logf(LOG_INFO, "Webpage requested from %s", server.client().remoteIP().toString().c_str());
+
+  server.sendHeader(F("Content-Encoding"), F("gzip"));
+
+#if defined(ARDUINO_ARCH_ESP8266)
+  server.send(200, dataType, (const char *)index_gz, index_gz_len);
+#elif defined(ESP32)
+  server.send_P(200, dataType, (const char *)index_gz, index_gz_len);
+#else
+#error Unknown architecture
+#endif
+  // server.send(200, "text/html", PAGE_Index);
 }
 
 void startHttpServer()
 {
   server.on("/", handleRoot);
   server.on("/updatewifi", handleUpdate);
+  server.on("/json", handleJSON);
+#if defined(ESP32)
+  server.on("/serverUpdate", HTTP_GET, []()
+            {
+        if (!server.authenticate(www_username, www_password))
+        {
+          return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
+        }
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/html", serverUpdate); });
+  /*handling uploading firmware file */
+  server.on(
+      "/update", HTTP_POST, []()
+      {
+        if (!server.authenticate(www_username, www_password))
+        {
+          return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
+        }
+    server.sendHeader("Connection", "close");
+    server.send(200, "text/plain", (Update.hasError()) ? "FAIL" : "OK");
+    ESP.restart(); },
+      []()
+      {
+        if (!server.authenticate(www_username, www_password))
+        {
+          return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
+        }
+        HTTPUpload &upload = server.upload();
+        if (upload.status == UPLOAD_FILE_START)
+        {
+          // Serial.printf("Update: %s\n", upload.filename.c_str());
+          if (!Update.begin(UPDATE_SIZE_UNKNOWN))
+          { // start with max available size
+            // Update.printError(Serial);
+          }
+        }
+        else if (upload.status == UPLOAD_FILE_WRITE)
+        {
+          /* flashing firmware to ESP*/
+          if (Update.write(upload.buf, upload.currentSize) != upload.currentSize)
+          {
+            // Update.printError(Serial);
+          }
+        }
+        else if (upload.status == UPLOAD_FILE_END)
+        {
+          if (Update.end(true))
+          { // true to set the size to the current progress
+            // Serial.printf("Update Success: %u\nRebooting...\n", upload.totalSize);
+          }
+          else
+          {
+            // Update.printError(Serial);
+          }
+        }
+      });
+#endif
   server.begin();
   DEBUG_PRINTLN(F("HTTP server started"));
   syslog.log(LOG_INFO, "HTTP server started");
@@ -292,9 +553,16 @@ void enableWifiAP()
   // WiFi Initialization as an AP
   /* You can remove the password parameter if you want the AP to be open. */
   WiFi.mode(WIFI_AP);
-  // WiFi.softAP(ssid, psk, channel, hidden, max_connection)
-  // Setting maximum of 8 clients, 1 is default channel already, 0 is false for hidden SSID - The maximum allowed by ES8266 is 8 - Thanks to Mitch Markin for that
+// WiFi.softAP(ssid, psk, channel, hidden, max_connection)
+// Setting maximum of 8 clients, 1 is default channel already, 0 is false for hidden SSID - The maximum allowed by ES8266 is 8 - Thanks to Mitch Markin for that
+// ESP32 got a 10 as maximum
+#if defined(ARDUINO_ARCH_ESP8266)
   WiFi.softAP(ssid, password, 1, 0, 8);
+#elif defined(ESP32)
+  WiFi.softAP(ssid, password, 1, 0, 10);
+#else
+#error Unknown architecture
+#endif
 
 #ifdef DEBUG
   IPAddress myIP = WiFi.softAPIP();
@@ -318,7 +586,14 @@ void enableWifi()
   DEBUG_PRINTLN("Connecting to WiFI");
   DEBUG_PRINTLN(wifissid);
   DEBUG_PRINTLN(wifipassword);
+#if defined(ARDUINO_ARCH_ESP8266)
   WiFi.begin(wifissid, wifipassword);
+#elif defined(ESP32)
+  WiFi.begin(wifissid.c_str(), wifipassword.c_str());
+#else
+#error Unknown architecture
+#endif
+
   int retries = 0;
   while ((WiFi.status() != WL_CONNECTED) && (retries < WIFIRETRIES))
   {
@@ -356,7 +631,14 @@ void disableWifi()
     WiFi.enableAP(false);
   }
   WiFi.mode(WIFI_OFF);
+
+#if defined(ARDUINO_ARCH_ESP8266)
   WiFi.forceSleepBegin();
+#elif defined(ESP32)
+#else
+#error Unknown architecture
+#endif
+
   DEBUG_PRINTLN(F("WiFi disabled"));
 }
 
@@ -416,7 +698,15 @@ void PrintRTCstatus()
 // send current RTC information to serial monitor
 {
   RtcDateTime Now = Rtc.GetDateTime();
+#if defined(ARDUINO_ARCH_ESP8266)
+  // Deprecated on ESP32
   time_t t = Now.Epoch32Time();
+#elif defined(ESP32)
+  time_t t = Now.Unix32Time();
+#else
+#error Unknown architecture
+#endif
+
   if (t)
   {
     DEBUG_PRINT("PrintRTCstatus: ");
@@ -437,7 +727,14 @@ void SetRTC(time_t t)
 {
   RtcDateTime timeToSet;
 
+#if defined(ARDUINO_ARCH_ESP8266)
+  // Deprecated on ESP32
   timeToSet.InitWithEpoch32Time(t);
+#elif defined(ESP32)
+  timeToSet.InitWithUnix32Time(t);
+#else
+#error Unknown architecture
+#endif
 
   Rtc.SetDateTime(timeToSet);
   if (Rtc.LastError() == 0)
@@ -586,7 +883,7 @@ void ShowWifiNetwork()
   if (WiFi.getMode() == WIFI_STA)
     wifinet = wifissid;
   else
-    wifinet = APSSID;
+    wifinet = convS(ssid);
 
   u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
   u8g2.drawGlyph(0, 43, 248);
@@ -688,7 +985,14 @@ void SyncWithGPS()
 void SyncWithRTC()
 {
   RtcDateTime time = Rtc.GetDateTime();
+#if defined(ARDUINO_ARCH_ESP8266)
+  // Deprecated on ESP32
   long int a = time.Epoch32Time();
+#elif defined(ESP32)
+  long int a = time.Unix32Time();
+#else
+#error Unknown architecture
+#endif
   setTime(a); // set system time from RTC
   DEBUG_PRINT("SyncFromRTC: ");
   DEBUG_PRINTLN(a);
@@ -696,12 +1000,23 @@ void SyncWithRTC()
   DEBUG_PRINTLN("Synchronized from RTC"); // send message to serial monitor
 }
 
+#if defined(ARDUINO_ARCH_ESP8266)
 void SyncCheck()
-// Manage synchonization of clock to GPS module
-// First, check to see if it is time to synchonize
-// Do time synchonization on the 1pps signal
-// This call must be made frequently (keep in main loop)
 {
+#elif defined(ESP32)
+void SyncCheck(void *parameter)
+{
+  for (;;)
+  {
+#else
+#error Unknown architecture
+#endif
+  // Manage synchonization of clock to GPS module
+  // First, check to see if it is time to synchonize
+  // Do time synchonization on the 1pps signal
+  // This call must be made frequently (keep in main loop)
+  // DEBUG_PRINTLN(F("SyncCheck Task Running..."));
+  // Serial.println("2SyncCheck Task Running...");
   unsigned long timeSinceSync = now() - syncTime; // how long has it been since last sync?
   if (pps && (timeSinceSync >= SYNC_INTERVAL))
   { // is it time to sync with GPS yet?
@@ -719,6 +1034,11 @@ void SyncCheck()
     DEBUG_PRINTLN("Called SyncWithRTC from SyncCheck");
     SyncWithRTC(); // sync with RTC instead
   }
+#if defined(ESP32)
+  vTaskDelay(1);
+  // taskYIELD();
+}
+#endif
 }
 
 // --------------------------------------------------------------------------------------------------
@@ -729,14 +1049,14 @@ void IRAM_ATTR isr() // INTERRUPT SERVICE REQUEST
   pps = 1;                     // Flag the 1pps input signal
   digitalWrite(PPS_LED, HIGH); // Ligth up led pps monitor
   pps_blink_time = millis();   // Capture time in order to turn led off so we can get the blink effect ever x milliseconds - On loop
-  DEBUG_PRINTLN("pps");
+  // DEBUG_PRINTLN("pps"); Sometimes cause: esp32 Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1).
 }
 
 // Handle button pressed interrupt
 void IRAM_ATTR btw() // INTERRUPT SERVICE REQUEST
 {
   int currentState = digitalRead(WIFI_BUTTON);
-  if (currentState != lastState)
+  if ((currentState != lastState) and (!buttonPressed))
   {
     if (lastState == HIGH)
     {
@@ -745,11 +1065,12 @@ void IRAM_ATTR btw() // INTERRUPT SERVICE REQUEST
     else
     {
       keytick_down = millis();
-      KeyCheck();
+      buttonPressed = true;
+      // KeyCheck();
     }
     lastState = currentState;
   }
-  DEBUG_PRINTLN(F("BUTTON PRESSED!"));
+  // DEBUG_PRINTLN(F("BUTTON PRESSED!")); Sometimes cause: esp32 Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1).
 }
 
 void processKeyHold()
@@ -774,79 +1095,19 @@ void processKeyPress()
   UpdateDisplay();
 }
 
-void setup()
-{
-  pinMode(LOCK_LED, OUTPUT);
-  pinMode(PPS_LED, OUTPUT);
-  pinMode(WIFI_LED, OUTPUT);
-  pinMode(WIFI_BUTTON, INPUT_PULLUP);
-
-  digitalWrite(LOCK_LED, LOW);
-  digitalWrite(PPS_LED, LOW);
-  digitalWrite(WIFI_LED, LOW);
-  // if you are using ESP-01 then uncomment the line below to reset the pins to
-  // the available pins for SDA, SCL
-  Wire.begin(D2, D1); // due to limited pins, use pin 0 and 2 for SDA, SCL
-  Rtc.Begin();
-  RtcEeprom.Begin();
-
-  LittleFS.begin(); // Init storage for WiFi SSID/PSK
-
-  InitLCD(); // initialize LCD display
-
-  ss.begin(9600); // set GPS baud rate to 9600 bps
-#ifdef DEBUG
-  Serial.begin(9600); // set serial monitor rate to 9600 bps
-#endif
-
-  // Serial.begin(9600);
-  delay(2000);
-
-  syslogserver = readData("/syslogserver"); // Password follows
-  syslogserver.trim();
-
-  IPAddress ip;
-  ip.fromString(syslogserver);
-  // Syslog syslog(udpClient, syslogserver, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
-  syslog.server(ip, SYSLOG_PORT);
-  syslog.deviceHostname(HOSTNAME);
-  syslog.appName("esp-ntp");
-  syslog.defaultPriority(LOG_DAEMON);
-
-  DEBUG_PRINTLN("Iniciado");
-
-  // Initialize RTC
-  while (!Rtc.GetIsRunning())
-  {
-    Rtc.SetIsRunning(true);
-    DEBUG_PRINTLN(F("RTC had to be force started"));
-    syslog.log(LOG_WARNING, "RTC had to be force started");
-  }
-
-  DEBUG_PRINTLN(F("RTC started"));
-
-  // never assume the Rtc was last configured by you, so
-  // just clear them to your needed state
-  Rtc.Enable32kHzPin(false);
-  Rtc.SetSquareWavePin(DS3231SquareWavePin_ModeNone);
-
-#ifdef DEBUG
-  PrintRTCstatus(); // show RTC diagnostics
-#endif
-  SyncWithRTC();                         // start clock with RTC data
-  attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
-  attachInterrupt(WIFI_BUTTON, btw, CHANGE);
-
-  processWifi();
-
-  // Startup UDP
-  Udp.begin(NTP_PORT);
-  RFC868server.begin();
-}
-
+#if defined(ARDUINO_ARCH_ESP8266)
 void FeedGpsParser()
-// feed currently available data from GPS module into tinyGPS parser
 {
+#elif defined(ESP32)
+  void FeedGpsParser(void *parameter)
+  {
+    for (;;)
+    {
+#else
+#error Unknown architecture
+#endif
+  // feed currently available data from GPS module into tinyGPS parser
+  // unsigned long StartTime = millis();
   while (ss.available()) // look for data from GPS module
   {
     char c = ss.read(); // read in all available chars
@@ -860,6 +1121,12 @@ void FeedGpsParser()
       digitalWrite(LOCK_LED, !digitalRead(LOCK_LED));
     // Serial.print(c);
   }
+  // DEBUG_PRINTLN(millis() - StartTime);
+#if defined(ESP32)
+  vTaskDelay(1);
+  // taskYIELD();
+}
+#endif
 }
 
 void UpdateDisplay()
@@ -917,16 +1184,25 @@ const unsigned long seventyYears = 2208988800UL; // to convert unix time to epoc
 
 // Process rdate request
 // Return the time as the number of seconds since 1/1/1900
+#if defined(ARDUINO_ARCH_ESP8266)
 void processRFC868()
 {
+#elif defined(ESP32)
+    void processRFC868(void *parameter)
+    {
+      for (;;)
+      {
+#else
+#error Unknown architecture
+#endif
+  // DEBUG_PRINTLN(F("Reached processRFC868"));
   uint32_t timestamp;
   WiFiClient client = RFC868server.accept();
-  client.setNoDelay(true);
-
+  // client.setNoDelay(true); // Unecessary for UDP
   if (client.connected())
   {
-    syslog.logf(LOG_INFO, "RDATE request from %s", client.remoteIP().toString().c_str());
-    // Serial.println(client.remoteIP().toString().c_str());
+    // syslog.logf(LOG_INFO, "RDATE request from %s", client.remoteIP().toString().c_str());
+    //  Serial.println(client.remoteIP().toString().c_str());
 
     // Send Data to connected client
     time_t t = now(); // get current time
@@ -947,11 +1223,24 @@ void processRFC868()
     // Disconnect client
     client.stop();
   }
+#if defined(ESP32)
+  vTaskDelay(1);
+  // taskYIELD();
+}
+#endif
 }
 
+#if defined(ARDUINO_ARCH_ESP8266)
 void processNTP()
 {
-
+#elif defined(ESP32)
+      void processNTP(void *parameter)
+      {
+        for (;;)
+        {
+#else
+#error Unknown architecture
+#endif
   // if there's data available, read a packet
   int packetSize = Udp.parsePacket();
   if (packetSize)
@@ -959,12 +1248,12 @@ void processNTP()
     Udp.read(packetBuffer, NTP_PACKET_SIZE);
     IPAddress Remote = Udp.remoteIP();
     int PortNum = Udp.remotePort();
-
-    syslog.logf(LOG_INFO, "NTP request from %s", Remote.toString().c_str());
+    // Packets bigger than NTP_PACKET size (like the ones generated by ntpq -c sysinfo <SERVER_IP>, which is 136 bytes) will block the UDP instance if not flushed. Not ready to deal with them right now, maybe in the future. Need to flush the remaining bytes.
+    Udp.flush();
 
 #ifdef DEBUG
     Serial.println();
-    Serial.print("Received UDP packet size ");
+    DEBUG_PRINTLN(F("Received UDP packet size "));
     Serial.println(packetSize);
     Serial.print("From ");
 
@@ -1126,19 +1415,138 @@ void processNTP()
     Udp.beginPacket(Remote, PortNum);
     Udp.write(packetBuffer, NTP_PACKET_SIZE);
     Udp.endPacket();
+
+    // syslog.logf(LOG_INFO, "NTP request from %s", Remote.toString().c_str());
   }
+#if defined(ESP32)
+  vTaskDelay(1);
+  // taskYIELD();
+}
+#endif
+}
+
+void setup()
+{
+  DEBUG_PRINTLN(F("Starting setup..."));
+  pinMode(LOCK_LED, OUTPUT);
+  pinMode(PPS_LED, OUTPUT);
+  pinMode(WIFI_LED, OUTPUT);
+  pinMode(WIFI_BUTTON, INPUT_PULLUP);
+
+  digitalWrite(LOCK_LED, LOW);
+  digitalWrite(PPS_LED, LOW);
+  digitalWrite(WIFI_LED, LOW);
+
+  // if you are using ESP-01 then uncomment the line below to reset the pins to
+  // the available pins for SDA, SCL
+  DEBUG_PRINTLN(F("Starting LittleFS"));
+#if defined(ARDUINO_ARCH_ESP8266)
+  // ss.begin (13U, 15U); // ESP8266 D7, D8
+  ss.begin(9600);     // set GPS baud rate to 9600 bps
+  Wire.begin(4U, 5U); // ESP8266 D2, D1 - due to limited pins, use pin 0 and 2 for SDA, SCL
+  LittleFS.begin();   // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
+#elif defined(ESP32)
+          ss.begin(115200);
+          Wire.begin(21U, 22U);
+          LittleFS.begin(true); // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
+#else
+#error Unknown architecture
+#endif
+
+  Rtc.Begin();
+  RtcEeprom.Begin();
+
+  InitLCD(); // initialize LCD display
+
+#ifdef DEBUG
+  Serial.begin(115200); // set serial monitor rate to 9600 bps
+#endif
+
+  // Serial.begin(9600);
+  delay(2000);
+
+  syslogserver = readData("/syslogserver"); // Password follows
+  syslogserver.trim();
+
+  IPAddress ip;
+  ip.fromString(syslogserver);
+  // Syslog syslog(udpClient, syslogserver, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
+  syslog.server(ip, SYSLOG_PORT);
+  syslog.deviceHostname(HOSTNAME);
+  syslog.appName("esp-ntp");
+  syslog.defaultPriority(LOG_DAEMON);
+
+  DEBUG_PRINTLN("Iniciado");
+  // DEBUG_PRINTLN(F(xPortGetCoreID()));
+
+  // Initialize RTC
+  while (!Rtc.GetIsRunning())
+  {
+    Rtc.SetIsRunning(true);
+    DEBUG_PRINTLN(F("RTC had to be force started"));
+    syslog.log(LOG_WARNING, "RTC had to be force started");
+  }
+
+  DEBUG_PRINTLN(F("RTC started"));
+
+  // never assume the Rtc was last configured by you, so
+  // just clear them to your needed state
+  Rtc.Enable32kHzPin(false);
+  Rtc.SetSquareWavePin(DS3231SquareWavePin_ModeNone);
+
+#ifdef DEBUG
+  PrintRTCstatus(); // show RTC diagnostics
+#endif
+  SyncWithRTC();                         // start clock with RTC data
+  attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
+  attachInterrupt(WIFI_BUTTON, btw, CHANGE);
+
+  processWifi();
+
+  // Startup UDP
+  Udp.begin(NTP_PORT);
+  RFC868server.begin();
+
+#if defined(ARDUINO_ARCH_ESP8266)
+#elif defined(ESP32)
+          // xTaskCreatePinnedToCore(
+          // Task1code, /* Function to implement the task */
+          //"Task1", /* Name of the task */
+          // 10000,  /* Stack size in words */
+          // NULL,  /* Task input parameter */
+          // 0,  /* Priority of the task */
+          //&Task1,  /* Task handle. */
+          // 0); /* Core where the task should run */
+          xTaskCreate(FeedGpsParser, "FeedGpsParser", 2048, NULL, 1, NULL); // decode incoming GPS data
+          xTaskCreate(SyncCheck, "SyncCheck", 2048, NULL, 1, NULL);         // synchronize to GPS or RTC
+          xTaskCreate(processNTP, "processNTP", 2048, NULL, 1, NULL);
+          xTaskCreate(processRFC868, "processRFC868", 2048, NULL, 1, NULL);
+#else
+#error Unknown architecture
+#endif
 }
 
 ////////////////////////////////////////
 
 void loop()
 {
-  FeedGpsParser();                                    // decode incoming GPS data
-  SyncCheck();                                        // synchronize to GPS or RTC
-  UpdateDisplay();                                    // if time has changed, display it
-  if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
-    digitalWrite(PPS_LED, LOW);
-  server.handleClient();
+#if defined(ARDUINO_ARCH_ESP8266)
+  FeedGpsParser(); // decode incoming GPS data
+  SyncCheck();     // synchronize to GPS or RTC
   processNTP();
   processRFC868();
+#elif defined(ESP32)
+#else
+#error Unknown architecture
+#endif
+
+  UpdateDisplay(); // if time has changed, display it
+  server.handleClient();
+  if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+    digitalWrite(PPS_LED, LOW);
+  if (buttonPressed)
+  { // Process keycheck of button presses outside ISR to avoid crash
+    buttonPressed = false;
+    KeyCheck();
+  }
 }
