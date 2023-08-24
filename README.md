@@ -55,14 +55,14 @@
   - Mini-360 DC-DC Buck converter
   - TP4056 Module
   - 18650 battery holder
+  - 0.5A/230v fuse
+  - 10D561K varistor
 - For power adapter powered:
   - 18650 battery shield
   - 5.5mm x 2.1 mm or any other suitable socket
 - Red, Green and Yellow LEDs
 - Resistors (150, 100 and 150 Ohms respectively for above leds)
 - Switch key and momentary push button
-- 0.5A/230v fuse
-- 10D561K varistor
 
 <b>New dashboard screenshot:</b>
 <p align="center"><img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/c2b418d3-9c57-4498-8c56-a7258ae198d4" width=60%></p>
