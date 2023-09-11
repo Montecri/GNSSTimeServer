@@ -42,8 +42,16 @@
   - Green led will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
   - Red led will blink once a second once lock is acquired, in sync with the PPS signal
 
+<b>Soon to be released functionalities:</b>
+
+- 10/100 Mbps Ethernet support
+
+<br>
+
 > [!NOTE]
 > Please note that some functionalities are available only on ESP32, due to either ESP8266 limitation or the functionality not being backported yet.
+
+<br>
 
 <b>Parts list:</b>
 
