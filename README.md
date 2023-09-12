@@ -21,6 +21,10 @@
 
 <br>
 
+<br>
+
+ [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/cristmon)
+
 <b>Functionalities:</b>
 
 - Internal RTC synched from GNSS (Global Navigation Satellite System) satellites constellation (GPS, BeiDou, GLONASS and Galileo; backed by CR2032 battery)
