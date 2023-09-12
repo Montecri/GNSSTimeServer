@@ -27,7 +27,7 @@
 
 <b>Functionalities:</b>
 
-- Internal RTC synched from GNSS (Global Navigation Satellite System) satellites constellation (GPS, BeiDou, GLONASS and Galileo; backed by CR2032 battery)
+- Internal real-time clock (RTC) with an integrated temperature-compensated crystal oscillator (TCXO), synched from Global Navigation Satellite System (GNSS) satellites constellation (GPS, BeiDou, GLONASS and Galileo; backed by CR2032 battery)
 - RTOS multi-tasking (when used with ESP32); core tasks (GNSS synching, Clock updating, processing NTP/RFC868 requests) running with a higher priority than common tasks (display update, PPS led blinking, web page serving)
 - Rich dashboard with information about MCU, RTC, GNSS, WiFi (uptime, free heap, minimum heap, temperature, version, ip, mac address, network name, network type, signal strength, timestamp lat, long, lock status, sats, precision, etc)
 - Highly optimized web page (minimalist single HTML with no external dependency, embedded graphics (as base64 encoded strings, including favicon), embedded script and layout, gzip-compressed - Python conversion/compression script supplied), requiring a password for critical functions. Only 32 Kb in size total, further reduced to ~20Kb through GZip compression. All modern browsers support gzipped pages, the compression takes place before firmware compiling, so no computing cycle is wasted by the device
