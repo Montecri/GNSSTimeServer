@@ -73,8 +73,9 @@
 - For power adapter powered:
   - 18650 battery shield
   - 5.5mm x 2.1 mm or any other suitable socket
-- Red, Green and Yellow LEDs
-- Resistors (150, 100 and 150 Ohms respectively for above leds)
+- For the ethernet-enabled version:
+  - WIZNet W5500 module
+- Resistors (150, 100, and 150 Ohms respectively for above LEDs)
 - Switch key and momentary push button
 
 <b>New dashboard screenshot:</b>
