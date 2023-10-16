@@ -10,7 +10,7 @@
 
 #include <Arduino.h>
 #include <U8g2lib.h>
-//#include <esp_wifi.h>
+// #include <esp_wifi.h>
 
 // State data
 #include <LittleFS.h>
@@ -31,20 +31,26 @@ WiFiUDP Udp;
 // Syslog support
 #include <Syslog.h>
 
-// Main Web Page
+// Main Web Page and update page
 // #include "index.h"
 #include "index_bytearray.h"
+#include "ota.h"
+
+#define ETHERNET_ENABLED
 
 #if defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
 #include <SoftwareSerial.h>
 
+#define HOSTNAME "GNSSTimeServerV1" // Hostname used for syslog and DHCP
+
 ESP8266WebServer server(80);
 SoftwareSerial ss(D7, D8); // Serial GPS handler
 #define PPS_LED 10
-#define LOCK_LED 0U      // ESP8266 D3
+#define LOCK_LED 0U    // ESP8266 D3
 #define WIFI_BUTTON 2U // ESP8266 D4
+#define AP_CHANNEL 1
 #elif defined(ESP32)
 #include "WiFi.h"
 #include <HardwareSerial.h>
@@ -54,9 +60,34 @@ SoftwareSerial ss(D7, D8); // Serial GPS handler
 
 HardwareSerial ss(2);
 WebServer server(80);
+
 #define PPS_LED 27
+
+#if defined(ETHERNET_ENABLED)
+#include <ETH.h>
+#include "driver/spi_master.h"
+#include <SPI.h>
+
+#define MO 23
+#define MI 19
+#define CL 18
+#define CS 5
+#define INT 25
+
+#define LOCK_LED 13
+#define WIFI_BUTTON 26
+
+#define AP_CHANNEL 3
+#define HOSTNAME "GNSSTimeServerV2WE" // Hostname used for syslog and DHCP
+#else
 #define LOCK_LED 19
 #define WIFI_BUTTON 5
+
+#define AP_CHANNEL 2
+// #define LOCK_LED 13
+// #define WIFI_BUTTON 26
+#define HOSTNAME "GNSSTimeServerV2W" // Hostname used for syslog and DHCP
+#endif
 
 // Priority tasks
 // TaskHandle_t FGP; // FeedGPSParser
@@ -90,13 +121,12 @@ void processKeyHold();
 void processKeyPress();
 
 // GLOBAL DEFINES
-#define HOSTNAME "ESP-Time-Server" // Hostname used for syslog and DHCP
-#define WIFIRETRIES 15             // Max number of wifi retry attempts
-//#define APSSID "GNSSTimeServer"    // Default AP SSID
-//#define APPSK "thereisnospoon"     // Default password
-#define PPS_PIN 12U                // ESP8266 D6 - Pin on which 1PPS line is attached
-#define SYNC_INTERVAL 10           // time, in seconds, between GPS sync attempts
-#define SYNC_TIMEOUT 30            // time(sec) without GPS input before error
+#define WIFIRETRIES 15 // Max number of wifi retry attempts
+// #define APSSID "GNSSTimeServer"    // Default AP SSID
+// #define APPSK "thereisnospoon"     // Default password
+#define PPS_PIN 12U      // ESP8266 D6 - Pin on which 1PPS line is attached
+#define SYNC_INTERVAL 10 // time, in seconds, between GPS sync attempts
+#define SYNC_TIMEOUT 30  // time(sec) without GPS input before error
 // #define RTC_UPDATE_INTERVAL    SECS_PER_DAY             // time(sec) between RTC SetTime events
 #define RTC_UPDATE_INTERVAL 30 // time(sec) between RTC SetTime events
 #define PPS_BLINK_INTERVAL 50  // Set time pps led should be on for blink effect
@@ -109,7 +139,7 @@ const char *www_password = "esp32";
 const char *www_realm = "Custom Auth Realm";
 // the Content of the HTML response in case of Unautherized Access Default:empty
 String authFailResponse = "Authentication Failed";
-const char *serverUpdate = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+//const char *serverUpdate = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
 
 #define WIFI_LED 14U     // ESP8266 D5
 #define BTN_HOLD_MS 2000 // Number of milliseconds to determine button being held
@@ -172,8 +202,8 @@ word keytick_down = 0; // record time of keypress
 word keytick_up = 0;
 int lastState = HIGH; // record last button state to support debouncing
 
-//#define DEBUG // Comment this in order to remove debug code from release version
-//#define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+// #define DEBUG // Comment this in order to remove debug code from release version
+// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -194,6 +224,100 @@ int lastState = HIGH; // record last button state to support debouncing
 #define DEBUG_PRINT(x)
 #define DEBUG_PRINTDEC(x)
 #define DEBUG_PRINTLN(x)
+#endif
+
+#if defined(ETHERNET_ENABLED)
+bool setupW5500()
+{
+  WiFi.mode(WIFI_OFF);
+  WiFi.begin();
+  tcpip_adapter_set_default_eth_handlers();
+
+  // Initialize TCP/IP network interface (should be called only once in application)
+  ESP_ERROR_CHECK(esp_netif_init());
+  esp_netif_config_t cfg = ESP_NETIF_DEFAULT_ETH();
+  esp_netif_t *eth_netif = esp_netif_new(&cfg);
+  // Set default handlers to process TCP/IP stuffs
+  ESP_ERROR_CHECK(esp_eth_set_default_handlers(eth_netif));
+
+  esp_eth_mac_t *eth_mac = NULL;
+  esp_eth_phy_t *eth_phy = NULL;
+
+  gpio_install_isr_service(0);
+
+  spi_bus_config_t buscfg = {
+      .mosi_io_num = MO,
+      .miso_io_num = MI,
+      .sclk_io_num = CL,
+      .quadwp_io_num = -1,
+      .quadhd_io_num = -1,
+  };
+  ESP_ERROR_CHECK(spi_bus_initialize(SPI3_HOST, &buscfg, 1));
+
+  spi_device_handle_t spi_handle = NULL;
+  spi_device_interface_config_t devcfg = {
+      .command_bits = 16, // Actually it's the address phase in W5500 SPI frame
+      .address_bits = 8,  // Actually it's the control phase in W5500 SPI frame
+      .mode = 0,
+      .clock_speed_hz = 12 * 1000 * 1000,
+      .spics_io_num = CS,
+      .queue_size = 20};
+  ESP_ERROR_CHECK(spi_bus_add_device(SPI3_HOST, &devcfg, &spi_handle));
+  /* w5500 ethernet driver is based on spi driver */
+  eth_w5500_config_t w5500_config = ETH_W5500_DEFAULT_CONFIG(spi_handle);
+  w5500_config.int_gpio_num = INT;
+
+  eth_mac_config_t mac_config = ETH_MAC_DEFAULT_CONFIG();
+  eth_phy_config_t phy_config = ETH_PHY_DEFAULT_CONFIG();
+  phy_config.reset_gpio_num = -1;
+
+  eth_mac = esp_eth_mac_new_w5500(&w5500_config, &mac_config);
+  if (eth_mac == NULL)
+  {
+    log_e("esp_eth_mac_new_esp32 failed");
+    return false;
+  }
+
+  eth_phy = esp_eth_phy_new_w5500(&phy_config);
+  if (eth_phy == NULL)
+  {
+    log_e("esp_eth_phy_new failed");
+    return false;
+  }
+
+  esp_eth_config_t eth_config = ETH_DEFAULT_CONFIG(eth_mac, eth_phy);
+  esp_eth_handle_t eth_handle = NULL;
+  ESP_ERROR_CHECK(esp_eth_driver_install(&eth_config, &eth_handle));
+
+  uint8_t macArr[] = {0x02, 0x00, 0x00, 0x12, 0x34, 0x56};
+  ESP_ERROR_CHECK(esp_eth_ioctl(eth_handle, ETH_CMD_S_MAC_ADDR, macArr));
+
+  /* attach Ethernet driver to TCP/IP stack */
+  ESP_ERROR_CHECK(esp_netif_attach(eth_netif, esp_eth_new_netif_glue(eth_handle)));
+  /* start Ethernet driver state machine */
+  ESP_ERROR_CHECK(esp_eth_start(eth_handle));
+
+  // Check if an IP was obtained
+  int count = 0;
+  boolean gotIP = false;
+
+  for (count = 0; count < 30; count++)
+  {
+    digitalWrite(WIFI_LED, !digitalRead(WIFI_LED));
+    if (ETH.localIP().toString() != "0.0.0.0")
+    {
+      gotIP = true;
+      digitalWrite(WIFI_LED, HIGH);
+      break;
+    }
+    delay(200);
+  }
+
+  if (!gotIP)
+    digitalWrite(WIFI_LED, HIGH);
+
+  return gotIP;
+}
 #endif
 
 // Button ISR debouncing routine
@@ -283,9 +407,9 @@ void writeData(const char *filename, String data)
 void handleUpdate()
 {
   if (!server.authenticate(www_username, www_password))
-    {
-      return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
-    }
+  {
+    return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
+  }
   wifissid = server.arg("wifi_ssid");
   wifipassword = server.arg("wifi_psk");
   syslogserver = server.arg("syslog_server");
@@ -340,17 +464,19 @@ String getMacAddress(int mt)
 //   return String(reinterpret_cast<const char*>(conf.sta.ssid));
 // }
 
-String convS(const char * a) {
-    int i;
-    
-    String res = "";
-    i = 0;
-    while (a[i]!='\0') {
-    //for (i = 0; i < arr_size; i++) {
-        res = res + a[i];
-        i++;
-    }
-    return res;
+String convS(const char *a)
+{
+  int i;
+
+  String res = "";
+  i = 0;
+  while (a[i] != '\0')
+  {
+    // for (i = 0; i < arr_size; i++) {
+    res = res + a[i];
+    i++;
+  }
+  return res;
 }
 
 // void handleRoot()
@@ -405,7 +531,7 @@ void handleJSON()
 #endif
   }
 
-char uptime[15] = "";
+  char uptime[15] = "";
 #if defined(ESP32)
   timeToString(uptime, sizeof(uptime), esp_timer_get_time() / 1000000);
 #endif
@@ -438,10 +564,14 @@ char uptime[15] = "";
             \"syslog\":\"%s\", \"ssid\":\"%s\", \"minimumheap\":\"%d\", \"idfversion\":\"%s\", \"internaltemp\":\"%.1f\",\
              \"macaddress\":\"%s\", \"locked\":\"%s\", \"validdatetime\":\"%s\", \"rtcrunning\":\"%s\", \"agingoffset\":\"%d\",\
               \"rtctemperature\":\"%.1f\"}",
-          "2.0h",
+          "2.0i",
           uptimeStr.c_str(),
           freeHeap,
+#if defined(ETHERNET_ENABLED)
+          ("W: " + myIP.toString() + " - E: " + ETH.localIP().toString()).c_str(),
+#else
           myIP.toString().c_str(),
+#endif
           wifinet.c_str(),
           wifmode,
           signal,
@@ -495,7 +625,8 @@ void startHttpServer()
           return server.requestAuthentication(DIGEST_AUTH, www_realm, authFailResponse);
         }
     server.sendHeader("Connection", "close");
-    server.send(200, "text/html", serverUpdate); });
+    //server.send(200, "text/html", serverUpdate); });
+    server.send(200, "text/html", PAGE_Update); });
   /*handling uploading firmware file */
   server.on(
       "/update", HTTP_POST, []()
@@ -557,9 +688,9 @@ void enableWifiAP()
 // Setting maximum of 8 clients, 1 is default channel already, 0 is false for hidden SSID - The maximum allowed by ES8266 is 8 - Thanks to Mitch Markin for that
 // ESP32 got a 10 as maximum
 #if defined(ARDUINO_ARCH_ESP8266)
-  WiFi.softAP(ssid, password, 1, 0, 8);
+  WiFi.softAP(ssid, password, AP_CHANNEL, 0, 8);
 #elif defined(ESP32)
-  WiFi.softAP(ssid, password, 1, 0, 10);
+  WiFi.softAP(ssid, password, AP_CHANNEL, 0, 10);
 #else
 #error Unknown architecture
 #endif
@@ -635,6 +766,11 @@ void disableWifi()
 #if defined(ARDUINO_ARCH_ESP8266)
   WiFi.forceSleepBegin();
 #elif defined(ESP32)
+// Start ethernet when WiFi is disabled
+#if defined(ETHERNET_ENABLED)
+  // if (setupW5500())
+  startHttpServer();
+#endif
 #else
 #error Unknown architecture
 #endif
@@ -886,11 +1022,11 @@ void ShowWifiNetwork()
     wifinet = convS(ssid);
 
   u8g2.setFont(u8g2_font_open_iconic_all_2x_t);
-  u8g2.drawGlyph(0, 43, 248);
+  u8g2.drawGlyph(0, 25, 248);
 
   int wrap = 38;
-  int ypos1 = 28;
-  int ypos2 = 43;
+  int ypos1 = 10;
+  int ypos2 = 25;
   // Play games with the font and spacing based on the length of the SSID
   if (wifinet.length() > 30)
   {
@@ -905,12 +1041,12 @@ void ShowWifiNetwork()
   else if (wifinet.length() > 11)
   {
     u8g2.setFont(u8g2_font_7x13_tf); // Not quite as small on one line
-    ypos1 = 43;
+    ypos1 = 30;
   }
   else
   {
     u8g2.setFont(u8g2_font_10x20_tf); // Readable on one line
-    ypos1 = 43;
+    ypos1 = 30;
   }
   u8g2.drawStr(16, ypos1, wifinet.substring(0, wrap).c_str());
   if (wifinet.length() > 20) // 2nd line needed if > 20
@@ -923,8 +1059,14 @@ void ShowIPAddress()
   if (myIP[0] == 0)
     myIP = WiFi.softAPIP();
 
+#if defined(ETHERNET_ENABLED)
+  u8g2.setFont(u8g2_font_7x13_tf); // Small font for long IP
+  u8g2.drawStr(0, 45, ETH.localIP().toString().c_str());
+#else
   u8g2.setFont(u8g2_font_logisoso16_tr); // choose a suitable font
-  u8g2.drawStr(0, 64, myIP.toString().c_str());
+#endif
+
+  u8g2.drawStr(0, 60, myIP.toString().c_str());
 }
 
 void InitLCD()
@@ -1449,6 +1591,9 @@ void setup()
           ss.begin(115200);
           Wire.begin(21U, 22U);
           LittleFS.begin(true); // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
+#if defined(ETHERNET_ENABLED)
+          setupW5500();
+#endif
 #else
 #error Unknown architecture
 #endif
