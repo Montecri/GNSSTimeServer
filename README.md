@@ -11,7 +11,7 @@
  <img src="http://img.youtube.com/vi/qk_Gvh3UzQg/mqdefault.jpg" alt="Watch the video" width="320" border="10" />
 </a></p>
 
-## WiFi enabled, GNSS fed, NTP/RDATE server based on ESP8266/ESP32 and Arduino
+## Ethernet/WiFi enabled, GNSS fed, NTP/RDATE server based on ESP8266/ESP32 and Arduino
 
 <br>
 
@@ -37,6 +37,7 @@
 - Backup battery for the whole unit (18650)
 - NTP and RDATE (RFC868) protocols supported
 - WiFi functionality as a client or access point
+- 10/100 Mbps Ethernet support (W5500 hardwired TCP/IP embedded Ethernet controller)
 - Syslog logging
 - Configuration webpage for WiFi and Syslog, saving to persistent storage (LittleFS)
 - Informative display with a timestamp, satellites in view, accuracy, WiFi server, IP address
@@ -45,10 +46,6 @@
   - Yellow led will be on or off to indicate respective WiFi status
   - Green led will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
   - Red led will blink once a second once lock is acquired, in sync with the PPS signal
-
-<b>Soon to be released functionalities:</b>
-
-- 10/100 Mbps Ethernet support
 
 <br>
 
