@@ -58,7 +58,11 @@
 
 - Amica NodeMCU (ESP8266 / ESP-12) or ESP32Duino (ESP32-WROOM-32)
 - DS3231 RTC
-- GNSS module. Tested with: Neo-6m V2, ATGM336H and ZKMICRO AT6558D
+- GNSS module. Tested with:
+  - Neo-6m V2
+  - ATGM336H
+  - ZKMICRO AT6558D
+  - TOPGNSS Allystar TAU1201
 - 1.3" SH1106 OLED Display
 - For mains powered:
   - Hi-Link 5V/3W
