@@ -21,6 +21,12 @@
 
 <br>
 
+<b>Maker Faire Rome 2023 pictures below:</b>
+
+<br>
+
+<img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/cf637804-379b-4be5-a07c-af3a5c1b1594" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/15a92624-6bb0-4295-8136-cc96383b7a8e" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/aa2b6793-e962-4c3c-a030-2f1ec7a8b674" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/a8cd090b-6194-4743-b599-550733dec994" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/01feef2b-c633-4772-a5c4-3793b329c892" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/14ac566d-7bf5-45a2-b738-d5385055b6c0" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/b276ff4f-4693-44f6-b029-f039b6e47ddb" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/bdfbd950-70f2-4502-bd30-96b4f68b698f" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/b9e6e230-84fd-47c0-8ac4-6cf30a84ad60" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/6d063f39-0830-4490-84ee-cd4b61f92f69" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/18027361-5f55-4952-b628-d976d45dc76d" width="15%"></img> <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/2cb836a8-a7ee-40b2-89f4-06099c17db42" width="15%"></img> 
+
 <br>
 
  [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/cristmon)
