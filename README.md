@@ -52,6 +52,8 @@
   - Yellow led will be on or off to indicate respective WiFi status
   - Green led will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
   - Red led will blink once a second once lock is acquired, in sync with the PPS signal
+- Diagnostics messages on boot
+  - When turned on, the OLED will first display the reason for the last shutdown (if it was rebooted by the MCU itself due to a power oscillation or other reason or if it was a user-triggered shutdown) and proceed displaying the startup status of each module, so if it get stuck on boot you can know which module is hanging and troubleshoot faster.
 
 <br>
 
