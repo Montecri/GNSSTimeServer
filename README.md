@@ -1,5 +1,12 @@
 # Stratum-1 GNSS Time Server Built From Scratch-GNSSTimeServer
 
+<p align="center"><a href="https://docs.google.com/forms/d/e/1FAIpQLSchZhBenU4u7z4XQDj6ZXXRinHSWwy8loy8uxbl7-j-GinHIg/viewform" target="_blank">
+ <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/809ed768-7c58-455c-b6e0-5b2a80768d20" alt="Answer Survey" width="64" border="10" />
+ <b>Answer the survey: Crowdfunding for GNSS Time Server</b>
+ </a></p>
+
+<br>
+
 <p align="center"><img src="https://github.com/Montecri/GPSTimeServer/assets/38574378/d716c6b1-41b5-4bbf-84f4-9e0a0178015a"></p> 
 
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/117382664-69117f00-aeb5-11eb-818f-4dcee22dbfc9.gif"></p>
