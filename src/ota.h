@@ -32,7 +32,7 @@ const char PAGE_Update[] PROGMEM = R"=====(
         }
         
         button {
-            background-color: #B6FF00;
+            background-color: #0094FF;
             color: white;
         }
     </style>
