@@ -36,7 +36,7 @@ WiFiUDP Udp;
 #include "index_bytearray.h"
 #include "ota.h"
 
-#define ETHERNET_ENABLED
+// #define ETHERNET_ENABLED
 
 #if defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266WiFi.h>
@@ -60,6 +60,15 @@ SoftwareSerial ss(D7, D8); // Serial GPS handler
 
 HardwareSerial ss(2);
 WebServer server(80);
+
+// Create a U8g2log object
+U8G2LOG u8g2log;
+// assume 4x6 font, define width and height
+#define U8LOG_WIDTH 32
+#define U8LOG_HEIGHT 10
+
+// allocate memory
+uint8_t u8log_buffer[U8LOG_WIDTH * U8LOG_HEIGHT];
 
 #define PPS_LED 27
 
@@ -139,7 +148,7 @@ const char *www_password = "esp32";
 const char *www_realm = "Custom Auth Realm";
 // the Content of the HTML response in case of Unautherized Access Default:empty
 String authFailResponse = "Authentication Failed";
-//const char *serverUpdate = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
+// const char *serverUpdate = "<form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='update'><input type='submit' value='Update'></form>";
 
 #define WIFI_LED 14U     // ESP8266 D5
 #define BTN_HOLD_MS 2000 // Number of milliseconds to determine button being held
@@ -173,10 +182,13 @@ int currentYear = 0;        // used for DST
 int displaynum = 0;         // Display pane currently displayed
 #define NUMDISPLAYPANES 2   // Number of display panes available
 
-long int pps_blink_time = 0;
+// long int pps_blink_time = 0;
+//  Replaced with ISR safe function
+TickType_t pps_blink_time = 0;
 
 /* Set these to your desired credentials. */
-const char *ssid = "GNSSTimeServer";
+// const char *ssid = "GNSSTimeServer";
+const char *ssid = HOSTNAME;
 const char *password = "thereisnospoon";
 String wifissid;
 String wifipassword;
@@ -202,7 +214,10 @@ word keytick_down = 0; // record time of keypress
 word keytick_up = 0;
 int lastState = HIGH; // record last button state to support debouncing
 
-// #define DEBUG // Comment this in order to remove debug code from release version
+// Get compile timestamp
+const char compile_date[] = __DATE__ " " __TIME__;
+
+//#define DEBUG // Comment this in order to remove debug code from release version
 // #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
@@ -214,9 +229,9 @@ int lastState = HIGH; // record last button state to support debouncing
 #define DEBUG_PRINT(x) Serial.print(String(xPortGetCoreID()) + " - " + String(x))
 #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
 #define DEBUG_PRINTLN(x) Serial.println(String(xPortGetCoreID()) + " - " + String(x))
-                      // #define DEBUG_PRINT(x) Serial.print(x)
-                      // #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
-                      // #define DEBUG_PRINTLN(x) Serial.println(x)
+// #define DEBUG_PRINT(x) Serial.print(x)
+// #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
+// #define DEBUG_PRINTLN(x) Serial.println(x)
 #else
 #error Unknown architecture
 #endif
@@ -225,6 +240,25 @@ int lastState = HIGH; // record last button state to support debouncing
 #define DEBUG_PRINTDEC(x)
 #define DEBUG_PRINTLN(x)
 #endif
+
+String return_reset_reason(int reason)
+{
+  switch (reason)
+  {
+    case 0 : return "ESP_RST_UNKNOWN";break;    //!< Reset reason can not be determined
+    case 1 : return "ESP_RST_POWERON";break;    //!< Reset due to power-on event
+    case 2 : return "ESP_RST_EXT";break;        //!< Reset by external pin (not applicable for ESP32)
+    case 3 : return "ESP_RST_SW";break;         //!< Software reset via esp_restart
+    case 4 : return "ESP_RST_PANIC";break;      //!< Software reset due to exception/panic
+    case 5 : return "ESP_RST_INT_WDT";break;    //!< Reset (software or hardware) due to interrupt watchdog
+    case 6 : return "ESP_RST_TASK_WDT";break;   //!< Reset due to task watchdog
+    case 7 : return "ESP_RST_WDT";break;        //!< Reset due to other watchdogs
+    case 8 : return "ESP_RST_DEEPSLEEP";break;  //!< Reset after exiting deep sleep mode
+    case 9 : return "ESP_RST_BROWNOUT";break;   //!< Brownout reset (software or hardware)
+    case 10 : return "ESP_RST_SDIO";break;       //!< Reset over SDIO
+    default : return "NO_MEAN";
+  }
+}
 
 #if defined(ETHERNET_ENABLED)
 bool setupW5500()
@@ -564,7 +598,7 @@ void handleJSON()
             \"syslog\":\"%s\", \"ssid\":\"%s\", \"minimumheap\":\"%d\", \"idfversion\":\"%s\", \"internaltemp\":\"%.1f\",\
              \"macaddress\":\"%s\", \"locked\":\"%s\", \"validdatetime\":\"%s\", \"rtcrunning\":\"%s\", \"agingoffset\":\"%d\",\
               \"rtctemperature\":\"%.1f\"}",
-          "2.0i",
+          compile_date,
           uptimeStr.c_str(),
           freeHeap,
 #if defined(ETHERNET_ENABLED)
@@ -1188,10 +1222,11 @@ void SyncCheck(void *parameter)
 
 void IRAM_ATTR isr() // INTERRUPT SERVICE REQUEST
 {
-  pps = 1;                     // Flag the 1pps input signal
-  digitalWrite(PPS_LED, HIGH); // Ligth up led pps monitor
-  pps_blink_time = millis();   // Capture time in order to turn led off so we can get the blink effect ever x milliseconds - On loop
-  // DEBUG_PRINTLN("pps"); Sometimes cause: esp32 Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1).
+  pps = 1; // Flag the 1pps input signal
+  pps_blink_time = xTaskGetTickCountFromISR();
+  // digitalWrite(PPS_LED, HIGH); // Ligth up led pps monitor - Moved to loop (lower priority) - 20231113
+  // pps_blink_time = millis();   // Capture time in order to turn led off so we can get the blink effect ever x milliseconds - On loop
+  //  DEBUG_PRINTLN("pps"); Sometimes cause: esp32 Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1).
 }
 
 // Handle button pressed interrupt
@@ -1569,67 +1604,68 @@ void processNTP()
 
 void setup()
 {
+#ifdef DEBUG
+  Serial.begin(115200); // set serial monitor rate to 115200 bps
+#endif
+
   DEBUG_PRINTLN(F("Starting setup..."));
   pinMode(LOCK_LED, OUTPUT);
   pinMode(PPS_LED, OUTPUT);
   pinMode(WIFI_LED, OUTPUT);
   pinMode(WIFI_BUTTON, INPUT_PULLUP);
 
-  digitalWrite(LOCK_LED, LOW);
-  digitalWrite(PPS_LED, LOW);
-  digitalWrite(WIFI_LED, LOW);
+  digitalWrite(LOCK_LED, HIGH);
+  digitalWrite(PPS_LED, HIGH);
+  digitalWrite(WIFI_LED, HIGH);
+
+  InitLCD(); // initialize LCD display
+
+  // Start printing boot diagnostic messages to help track issues
+  u8g2.setFont(u8g2_font_tom_thumb_4x6_mf);
+  u8g2log.begin(u8g2, U8LOG_WIDTH, U8LOG_HEIGHT, u8log_buffer); // connect to u8g2, assign buffer
+  u8g2log.setLineHeightOffset(0);                               // set extra space between lines in pixel, this can be negative
+  u8g2log.setRedrawMode(0);                                     // 0: Update screen with newline, 1: Update screen for every char
+
+  u8g2log.print("Reset reason: ");
+  u8g2log.print(return_reset_reason(esp_reset_reason()));
+  delay(1000);
+  //u8g2log.print("\nDiagnostics messages:\n");
 
   // if you are using ESP-01 then uncomment the line below to reset the pins to
   // the available pins for SDA, SCL
   DEBUG_PRINTLN(F("Starting LittleFS"));
+
+  u8g2log.print("\nStarting COM and FS...");
 #if defined(ARDUINO_ARCH_ESP8266)
   // ss.begin (13U, 15U); // ESP8266 D7, D8
   ss.begin(9600);     // set GPS baud rate to 9600 bps
   Wire.begin(4U, 5U); // ESP8266 D2, D1 - due to limited pins, use pin 0 and 2 for SDA, SCL
   LittleFS.begin();   // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
+  u8g2log.print(" Done\n");
 #elif defined(ESP32)
           ss.begin(115200);
           Wire.begin(21U, 22U);
           LittleFS.begin(true); // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
+          u8g2log.print(" Done\n");
 #if defined(ETHERNET_ENABLED)
+          u8g2log.print("Starting ETH...");
           setupW5500();
+          u8g2log.print(" Done\n");
 #endif
 #else
 #error Unknown architecture
 #endif
-
+  delay(1000);
+  u8g2log.print("Starting RTC...");
   Rtc.Begin();
   RtcEeprom.Begin();
-
-  InitLCD(); // initialize LCD display
-
-#ifdef DEBUG
-  Serial.begin(115200); // set serial monitor rate to 9600 bps
-#endif
-
-  // Serial.begin(9600);
-  delay(2000);
-
-  syslogserver = readData("/syslogserver"); // Password follows
-  syslogserver.trim();
-
-  IPAddress ip;
-  ip.fromString(syslogserver);
-  // Syslog syslog(udpClient, syslogserver, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
-  syslog.server(ip, SYSLOG_PORT);
-  syslog.deviceHostname(HOSTNAME);
-  syslog.appName("esp-ntp");
-  syslog.defaultPriority(LOG_DAEMON);
-
-  DEBUG_PRINTLN("Iniciado");
-  // DEBUG_PRINTLN(F(xPortGetCoreID()));
-
   // Initialize RTC
   while (!Rtc.GetIsRunning())
   {
     Rtc.SetIsRunning(true);
     DEBUG_PRINTLN(F("RTC had to be force started"));
     syslog.log(LOG_WARNING, "RTC had to be force started");
+    u8g2log.print("RTC had to be force started\n");
   }
 
   DEBUG_PRINTLN(F("RTC started"));
@@ -1642,18 +1678,59 @@ void setup()
 #ifdef DEBUG
   PrintRTCstatus(); // show RTC diagnostics
 #endif
-  SyncWithRTC();                         // start clock with RTC data
-  attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input
-  attachInterrupt(WIFI_BUTTON, btw, CHANGE);
+  u8g2log.print("Done\n");
+  delay(1000);
 
+  // Serial.begin(9600);
+  // delay(2000);
+
+  u8g2log.print("Starting SYSLOG...");
+  syslogserver = readData("/syslogserver"); // Password follows
+  syslogserver.trim();
+
+  IPAddress ip;
+  ip.fromString(syslogserver);
+  // Syslog syslog(udpClient, syslogserver, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
+  syslog.server(ip, SYSLOG_PORT);
+  syslog.deviceHostname(HOSTNAME);
+  syslog.appName(HOSTNAME);
+  syslog.defaultPriority(LOG_DAEMON);
+  u8g2log.print("Done\n");
+  delay(1000);
+
+  DEBUG_PRINTLN("Iniciado");
+  // DEBUG_PRINTLN(F(xPortGetCoreID()));
+
+  u8g2log.print("Start RTC Sync...");
+  SyncWithRTC(); // start clock with RTC data
+  u8g2log.print("Done\n");
+  delay(1000);
+
+  u8g2log.print("Start PPS ISR...");
+  attachInterrupt(PPS_PIN, isr, RISING); // enable GPS 1pps interrupt input - attachInterrupt(digitalPinToInterrupt(pin), ISR, mode) (recommended)
+  u8g2log.print("Done\n");
+  delay(1000);
+
+  u8g2log.print("Start WiFi ISR...");
+  attachInterrupt(WIFI_BUTTON, btw, CHANGE);
+  u8g2log.print("Done\n");
+  delay(1000);
+
+  u8g2log.print("Start WiFi process...");
   processWifi();
+  u8g2log.print("Done\n");
+  delay(1000);
 
   // Startup UDP
+  u8g2log.print("Start NTP/RFC868...");
   Udp.begin(NTP_PORT);
   RFC868server.begin();
+  u8g2log.print("Done\n");
+  delay(1000);
 
 #if defined(ARDUINO_ARCH_ESP8266)
 #elif defined(ESP32)
+          u8g2log.print("Staring tasks...");
           // xTaskCreatePinnedToCore(
           // Task1code, /* Function to implement the task */
           //"Task1", /* Name of the task */
@@ -1666,9 +1743,15 @@ void setup()
           xTaskCreate(SyncCheck, "SyncCheck", 2048, NULL, 1, NULL);         // synchronize to GPS or RTC
           xTaskCreate(processNTP, "processNTP", 2048, NULL, 1, NULL);
           xTaskCreate(processRFC868, "processRFC868", 2048, NULL, 1, NULL);
+          u8g2log.print("Done\n");
+          delay(1000);
 #else
 #error Unknown architecture
 #endif
+
+  // u8g2log.print("\n");
+  u8g2log.print("All complete!");
+  delay(2000);
 }
 
 ////////////////////////////////////////
@@ -1687,8 +1770,11 @@ void loop()
 
   UpdateDisplay(); // if time has changed, display it
   server.handleClient();
-  if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+  // if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+  if (xTaskGetTickCount() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
     digitalWrite(PPS_LED, LOW);
+  else
+    digitalWrite(PPS_LED, HIGH);
   if (buttonPressed)
   { // Process keycheck of button presses outside ISR to avoid crash
     buttonPressed = false;
