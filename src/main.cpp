@@ -38,6 +38,15 @@ WiFiUDP Udp;
 
 // #define ETHERNET_ENABLED
 
+// Create a U8g2log object
+U8G2LOG u8g2log;
+// assume 4x6 font, define width and height
+#define U8LOG_WIDTH 32
+#define U8LOG_HEIGHT 10
+
+// allocate memory
+uint8_t u8log_buffer[U8LOG_WIDTH * U8LOG_HEIGHT];
+
 #if defined(ARDUINO_ARCH_ESP8266)
 #include <ESP8266WiFi.h>
 #include <ESP8266WebServer.h>
@@ -51,6 +60,9 @@ SoftwareSerial ss(D7, D8); // Serial GPS handler
 #define LOCK_LED 0U    // ESP8266 D3
 #define WIFI_BUTTON 2U // ESP8266 D4
 #define AP_CHANNEL 1
+
+long int pps_blink_time = 0;
+
 #elif defined(ESP32)
 #include "WiFi.h"
 #include <HardwareSerial.h>
@@ -61,16 +73,10 @@ SoftwareSerial ss(D7, D8); // Serial GPS handler
 HardwareSerial ss(2);
 WebServer server(80);
 
-// Create a U8g2log object
-U8G2LOG u8g2log;
-// assume 4x6 font, define width and height
-#define U8LOG_WIDTH 32
-#define U8LOG_HEIGHT 10
-
-// allocate memory
-uint8_t u8log_buffer[U8LOG_WIDTH * U8LOG_HEIGHT];
-
 #define PPS_LED 27
+
+//  Replaced with ISR safe function
+TickType_t pps_blink_time = 0;
 
 #if defined(ETHERNET_ENABLED)
 #include <ETH.h>
@@ -182,10 +188,6 @@ int currentYear = 0;        // used for DST
 int displaynum = 0;         // Display pane currently displayed
 #define NUMDISPLAYPANES 2   // Number of display panes available
 
-// long int pps_blink_time = 0;
-//  Replaced with ISR safe function
-TickType_t pps_blink_time = 0;
-
 /* Set these to your desired credentials. */
 // const char *ssid = "GNSSTimeServer";
 const char *ssid = HOSTNAME;
@@ -217,8 +219,8 @@ int lastState = HIGH; // record last button state to support debouncing
 // Get compile timestamp
 const char compile_date[] = __DATE__ " " __TIME__;
 
-//#define DEBUG // Comment this in order to remove debug code from release version
-// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+// #define DEBUG // Comment this in order to remove debug code from release version
+//  #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
 
 #ifdef DEBUG
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -245,18 +247,41 @@ String return_reset_reason(int reason)
 {
   switch (reason)
   {
-    case 0 : return "ESP_RST_UNKNOWN";break;    //!< Reset reason can not be determined
-    case 1 : return "ESP_RST_POWERON";break;    //!< Reset due to power-on event
-    case 2 : return "ESP_RST_EXT";break;        //!< Reset by external pin (not applicable for ESP32)
-    case 3 : return "ESP_RST_SW";break;         //!< Software reset via esp_restart
-    case 4 : return "ESP_RST_PANIC";break;      //!< Software reset due to exception/panic
-    case 5 : return "ESP_RST_INT_WDT";break;    //!< Reset (software or hardware) due to interrupt watchdog
-    case 6 : return "ESP_RST_TASK_WDT";break;   //!< Reset due to task watchdog
-    case 7 : return "ESP_RST_WDT";break;        //!< Reset due to other watchdogs
-    case 8 : return "ESP_RST_DEEPSLEEP";break;  //!< Reset after exiting deep sleep mode
-    case 9 : return "ESP_RST_BROWNOUT";break;   //!< Brownout reset (software or hardware)
-    case 10 : return "ESP_RST_SDIO";break;       //!< Reset over SDIO
-    default : return "NO_MEAN";
+  case 0:
+    return "ESP_RST_UNKNOWN";
+    break; //!< Reset reason can not be determined
+  case 1:
+    return "ESP_RST_POWERON";
+    break; //!< Reset due to power-on event
+  case 2:
+    return "ESP_RST_EXT";
+    break; //!< Reset by external pin (not applicable for ESP32)
+  case 3:
+    return "ESP_RST_SW";
+    break; //!< Software reset via esp_restart
+  case 4:
+    return "ESP_RST_PANIC";
+    break; //!< Software reset due to exception/panic
+  case 5:
+    return "ESP_RST_INT_WDT";
+    break; //!< Reset (software or hardware) due to interrupt watchdog
+  case 6:
+    return "ESP_RST_TASK_WDT";
+    break; //!< Reset due to task watchdog
+  case 7:
+    return "ESP_RST_WDT";
+    break; //!< Reset due to other watchdogs
+  case 8:
+    return "ESP_RST_DEEPSLEEP";
+    break; //!< Reset after exiting deep sleep mode
+  case 9:
+    return "ESP_RST_BROWNOUT";
+    break; //!< Brownout reset (software or hardware)
+  case 10:
+    return "ESP_RST_SDIO";
+    break; //!< Reset over SDIO
+  default:
+    return "NO_MEAN";
   }
 }
 
@@ -1223,7 +1248,13 @@ void SyncCheck(void *parameter)
 void IRAM_ATTR isr() // INTERRUPT SERVICE REQUEST
 {
   pps = 1; // Flag the 1pps input signal
-  pps_blink_time = xTaskGetTickCountFromISR();
+#if defined(ARDUINO_ARCH_ESP8266)
+  pps_blink_time = millis(); // Capture time in order to turn led off so we can get the blink effect ever x milliseconds
+#elif defined(ESP32)
+    pps_blink_time = xTaskGetTickCountFromISR();
+#else
+#error Unknown architecture
+#endif
   // digitalWrite(PPS_LED, HIGH); // Ligth up led pps monitor - Moved to loop (lower priority) - 20231113
   // pps_blink_time = millis();   // Capture time in order to turn led off so we can get the blink effect ever x milliseconds - On loop
   //  DEBUG_PRINTLN("pps"); Sometimes cause: esp32 Guru Meditation Error: Core  1 panic'ed (Interrupt wdt timeout on CPU1).
@@ -1542,7 +1573,7 @@ void processNTP()
     tempval = timestamp;
     packetBuffer[18] = (tempval >> 8) & 0xFF;
     tempval = timestamp;
-    packetBuffer[19] = (tempval)&0xFF;
+    packetBuffer[19] = (tempval) & 0xFF;
 
     packetBuffer[20] = 0;
     packetBuffer[21] = 0;
@@ -1566,7 +1597,7 @@ void processNTP()
     tempval = timestamp;
     packetBuffer[34] = (tempval >> 8) & 0xFF;
     tempval = timestamp;
-    packetBuffer[35] = (tempval)&0xFF;
+    packetBuffer[35] = (tempval) & 0xFF;
 
     packetBuffer[36] = 0;
     packetBuffer[37] = 0;
@@ -1580,7 +1611,7 @@ void processNTP()
     tempval = timestamp;
     packetBuffer[42] = (tempval >> 8) & 0xFF;
     tempval = timestamp;
-    packetBuffer[43] = (tempval)&0xFF;
+    packetBuffer[43] = (tempval) & 0xFF;
 
     packetBuffer[44] = 0;
     packetBuffer[45] = 0;
@@ -1626,10 +1657,15 @@ void setup()
   u8g2log.setLineHeightOffset(0);                               // set extra space between lines in pixel, this can be negative
   u8g2log.setRedrawMode(0);                                     // 0: Update screen with newline, 1: Update screen for every char
 
+#if defined(ARDUINO_ARCH_ESP8266)
+#elif defined(ESP32)
   u8g2log.print("Reset reason: ");
   u8g2log.print(return_reset_reason(esp_reset_reason()));
   delay(1000);
-  //u8g2log.print("\nDiagnostics messages:\n");
+#else
+#error Unknown architecture
+#endif
+  // u8g2log.print("\nDiagnostics messages:\n");
 
   // if you are using ESP-01 then uncomment the line below to reset the pins to
   // the available pins for SDA, SCL
@@ -1770,8 +1806,14 @@ void loop()
 
   UpdateDisplay(); // if time has changed, display it
   server.handleClient();
-  // if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
-  if (xTaskGetTickCount() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+
+  #if defined(ARDUINO_ARCH_ESP8266)
+    if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+  #elif defined(ESP32)
+    if (xTaskGetTickCount() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+  #else
+  #error Unknown architecture
+  #endif
     digitalWrite(PPS_LED, LOW);
   else
     digitalWrite(PPS_LED, HIGH);
