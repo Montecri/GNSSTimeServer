@@ -43,8 +43,8 @@ jobs:
 
       - name: Rename Firmware
         run: env
-      - run: mv ./Code/.pio/build/ESP32Duino/firmware.bin ./Code/.pio/build/ESP32Duino/firmware-ESP32Duino-$GITHUB_REF_NAME.bin
-      - run: mv ./Code/.pio/build/Amica/firmware.bin ./Code/.pio/build/Amica/firmware-Amica-$GITHUB_REF_NAME.bin
+      - run: mv .pio/build/ESP32Duino/firmware.bin .pio/build/ESP32Duino/firmware-ESP32Duino-$GITHUB_REF_NAME.bin
+      - run: mv .pio/build/Amica/firmware.bin .pio/build/Amica/firmware-Amica-$GITHUB_REF_NAME.bin
 
       - name: Archive production artifacts
         uses: actions/upload-artifact@v2
