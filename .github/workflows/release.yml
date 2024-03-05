@@ -45,7 +45,7 @@ jobs:
         uses: actions/upload-artifact@v2
         with:
           name: firmware
-          path: .pio/build/**/mobiflight*.hex
+          path: .pio/build/**/mobiflight*.bin
 
       - name: Release
         uses: softprops/action-gh-release@v1
