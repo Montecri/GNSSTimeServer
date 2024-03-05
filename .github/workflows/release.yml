@@ -18,26 +18,24 @@ jobs:
   ~/.platformio/.cache
   key: ${{ runner.os }}-pio
   - uses: actions/setup-python@v4
-        with:
-          python-version: '3.9'
-	      - name: Create Release
-	  - uses:
-        id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
-		with:
-          tag_name: ${{ github.ref }}
-          release_name: Release ${{ github.ref }}
-          #body: |
-          #  Changes in this Release
-          #  - First Change
-          #  - Second Change
-          draft: true
-          prerelease: false  
-		  
-      #- name: Install PlatformIO Core
-      #  run: pip install --upgrade platformio
-
-      #- name: Build PlatformIO Project
-      #  run: pio run
+  with:
+  python-version: '3.9'
+  - name: Create Release
+  - uses:
+  id: create_release
+  uses: actions/create-release@v1
+  env:
+  GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }} # This token is provided by Actions, you do not need to create your own token
+  with:
+  tag_name: ${{ github.ref }}
+  release_name: Release ${{ github.ref }}
+  #body: |
+  #  Changes in this Release
+  #  - First Change
+  #  - Second Change
+  draft: true
+  prerelease: false
+  #- name: Install PlatformIO Core
+  #  run: pip install --upgrade platformio
+  #- name: Build PlatformIO Project
+  #  run: pio run
