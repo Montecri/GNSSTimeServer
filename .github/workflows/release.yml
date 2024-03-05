@@ -11,17 +11,7 @@ jobs:
   steps:
   - name: Checkout code
   - uses: actions/checkout@v3
-  - uses: actions/cache@v3
-  with:
-  path: |
-  ~/.cache/pip
-  ~/.platformio/.cache
-  key: ${{ runner.os }}-pio
-  - uses: actions/setup-python@v4
-  with:
-  python-version: '3.9'
   - name: Create Release
-  - uses:
   id: create_release
   uses: actions/create-release@v1
   env:
