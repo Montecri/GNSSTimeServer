@@ -1,4 +1,5 @@
 # Stratum-1 GNSS Time Server Built From Scratch-GNSSTimeServer
+![GitHub Actions Workflow Status](https://img.shields.io/github/actions/workflow/status/Montecri/GNSSTimeServer/.github%2Fworkflows%2Fmain.yml)
 
 <p align="center"><a href="https://docs.google.com/forms/d/e/1FAIpQLSchZhBenU4u7z4XQDj6ZXXRinHSWwy8loy8uxbl7-j-GinHIg/viewform" target="_blank">
  <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/809ed768-7c58-455c-b6e0-5b2a80768d20" alt="Answer Survey" width="64" border="10" />
