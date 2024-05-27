@@ -47,7 +47,7 @@
 
 - Internal real-time clock (RTC) with an integrated temperature-compensated crystal oscillator (TCXO), synched from Global Navigation Satellite System (GNSS) satellites constellation (GPS, BeiDou, GLONASS and Galileo; backed by CR2032 battery)
 - Real-time operating system (RTOS) multi-tasking (when used with ESP32); core tasks (GNSS synching, Clock updating, processing NTP/RFC868 requests) running with a higher priority than common tasks (display update, PPS led blinking, web page serving)
-- Rich dashboard with information about MCU, RTC, GNSS, WiFi (uptime, free heap, minimum heap, temperature, version, ip, mac address, network name, network type, signal strength, timestamp lat, long, lock status, sats, precision, etc)
+- Rich dashboard with information about MCU, RTC, GNSS, WiFi (uptime, free heap, minimum heap, temperature, version, IP, mac address, network name, network type, signal strength, timestamp lat, long, lock status, sats, precision, etc)
 - Highly optimized web page (minimalist single HTML with no external dependency, embedded graphics (as base64 encoded strings, including favicon), embedded script and layout, gzip-compressed - Python conversion/compression script supplied), requiring a password for critical functions. Only 32 Kb in size total, further reduced to ~20Kb through GZip compression. All modern browsers support gzipped pages, the compression takes place before firmware compiling, so no computing cycle is wasted by the device
   - Data separated from layout, once the page is loaded, data will be updated every 5 seconds from a lightweight JSON string, no full page reloads are needed
 - Over-The-Air (OTA) Web Based firmware upgrade
@@ -59,13 +59,13 @@
 - Syslog logging
 - Configuration webpage for WiFi and Syslog, saving to persistent storage (LittleFS)
 - Informative display with a timestamp, satellites in view, accuracy, WiFi server, IP address
-- Dual function button, short press switch information on display, long press disables WiFi
+- Dual function button, short press switch information on display, long press toggles WiFi
 - Status at a glance, with dedicated 5mm LEDs for GPS lock, PPS signal, and WiFi status, as well as visible internal leds for charging and GPS module statuses
-  - Yellow led will be on or off to indicate respective WiFi status
-  - Green led will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
-  - Red led will blink once a second once lock is acquired, in sync with the PPS signal
+  - Yellow LED will be on or off to indicate respective WiFi status
+  - Green LED will blink/pulsate at different rates to indicate a lock is being acquired and stay steady green when locked
+  - Red LED will blink once a second once the lock is acquired, in sync with the PPS signal
 - Diagnostics messages on boot
-  - When turned on, the OLED will first display the reason for the last shutdown (if it was rebooted by the MCU itself due to a power oscillation or other reason or if it was a user-triggered shutdown) and proceed displaying the startup status of each module, so if it get stuck on boot you can know which module is hanging and troubleshoot faster.
+  - When turned on, the OLED will first display the reason for the last shutdown (if it was rebooted by the MCU itself due to a power oscillation or other reason or if it was a user-triggered shutdown) and proceed displaying the startup status of each module, so if it gets stuck on boot you can know which module is hanging and troubleshoot faster.
 
 <br>
 
@@ -114,7 +114,7 @@ https://github.com/Montecri/GPSTimeServer/tree/Dual-Display
 ---
 <p align="center"><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"><b>   ATTENTION   </b><img src="https://user-images.githubusercontent.com/38574378/132773469-08fb7b59-2f9d-4641-9665-c8d50d3904bc.png"></p> 
 
-Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it came with a LIR2032 battery (rechargeable), the module is fed with 5v will generate an unsafe charging voltage for that battery.
+Several DS3231 modules being sold today contain a hazardous design flaw in which it supplies a voltage to the battery cradle regardless if it came with a rechargeable battery or not. If it came with a CR2032 battery (non-rechargeable) the consequence is that it will swell, explode, or worse. If it comes with a LIR2032 battery (rechargeable), the module is fed with 5v will generate an unsafe charging voltage for that battery.
 
 There are workarounds for that so you don't need to toss your module away, the most popular being removing a diode and/or resistor.
 
