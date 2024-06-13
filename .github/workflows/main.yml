@@ -1,7 +1,12 @@
 name: PlatformIO CI
 
-on: [push]
-
+on:
+  workflow_dispatch
+  push:
+    branches:
+      - master
+      - development
+      
 jobs:
   build:
     runs-on: ubuntu-latest
