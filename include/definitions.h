@@ -4,14 +4,14 @@
 #include <WiFiUdp.h>        // UDP functionality
 #define NTP_PORT 123        // Time Server Port
 
+#include <RtcDS3231.h>      // RTC functions
+#include <EepromAT24C32.h   // We will use clock's eeprom to store config
+
 // Create a WiFi access point and provide a web server on it 
 
 #include <ESP8266WiFi.h>
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
-
-#include <RtcDS3231.h>         // RTC functions
-#include <EepromAT24C32.h>     // We will use clock's eeprom to store config
 
 #define APSSID "GPSTimeServer" // AP SSID - set to desired server name
 #define APPSK "thereisnospoon" // AP password - set to desired server password
