@@ -10,6 +10,7 @@
 #include <WiFiClient.h>
 #include <ESP8266WebServer.h>
 
+#include <RtcDS3231.h>         // RTC functions
 #include <EepromAT24C32.h>     // We will use clock's eeprom to store config
 
 #define APSSID "GPSTimeServer" // AP SSID - set to desired server name
@@ -31,7 +32,7 @@
 #include <TimeLib.h>     // Time functions  https://github.com/PaulStoffregen/Time
 #include <TinyGPS.h>     // GPS parsing     https://github.com/mikalhart/TinyGPS
 #include <Wire.h>        // OLED and DS3231 
-#include <RtcDS3231.h>   // RTC functions
+
 
 RtcDS3231<TwoWire> Rtc(Wire);
 EepromAt24c32<TwoWire> RtcEeprom(Wire);
