@@ -1288,6 +1288,8 @@ void processKeyHold()
   else
     statusWifi = 1;
 
+  writeData("/statusWifi", String(statusWifi)); // Save last WiFi status so it can be restored on next boot
+
   processWifi();
   DEBUG_PRINTLN(F("BUTTON HOLD PROCESSED!"));
 }
@@ -1753,6 +1755,7 @@ void setup()
   delay(1000);
 
   u8g2log.print("Start WiFi process...");
+  statusWifi = atoi(readData("/statusWifi").c_str()); // Restore last WiFi state
   processWifi();
   u8g2log.print("Done\n");
   delay(1000);
