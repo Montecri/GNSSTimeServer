@@ -29,7 +29,7 @@
 
 🎖️ Featured by [Hackaday](https://hackaday.com/2021/07/25/portable-gps-time-server-powered-by-the-esp8266/)
 
-🎖️ Selected for [Maker Faire Rome 2023](https://makerfairerome.eu/en/exhibitors/?edition=2023&exhibit=2320015)
+🎖️ Selected for and presented at [Maker Faire Rome 2023](https://makerfairerome.eu/en/exhibitors/?edition=2023&exhibit=2320015)
 
 <br>
 
