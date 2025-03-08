@@ -154,6 +154,11 @@ Contributions from:
 
 <br/><br/>
 
+<b>ESP32 With Ethernet Wiring Diagram:</b>
+![sketch-ESP32_With_ETH-20250308_bb](https://github.com/user-attachments/assets/6a487cf6-d06c-4ed9-9749-cc6262106d53)
+
+<br/><br/>
+
 <b>Power Supply Diagram:</b>
 ![power supply - UPDATED_bb-menor](https://user-images.githubusercontent.com/38574378/231014475-e1dc9185-a66d-4c0c-b681-dbc1ae9cf767.png)
 
