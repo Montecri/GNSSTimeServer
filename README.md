@@ -142,7 +142,19 @@ Contributions from:
 @mmarkin
 @sjthespian
 
+---
+
+<b>ESP8266 Wiring Diagram:</b>
 ![sketch_bb-menor](https://user-images.githubusercontent.com/38574378/117375890-66f3f400-aea6-11eb-9389-1b9b0b01f88f.png)
+
+<br/><br/>
+
+<b>ESP32 Wiring Diagram:</b>
+![sketch-ESP32-20250308_bb](https://github.com/user-attachments/assets/c7c017e1-8819-4ea1-a017-015768c57292)
+
+<br/><br/>
+
+<b>Power Supply Diagram:</b>
 ![power supply - UPDATED_bb-menor](https://user-images.githubusercontent.com/38574378/231014475-e1dc9185-a66d-4c0c-b681-dbc1ae9cf767.png)
 
 
