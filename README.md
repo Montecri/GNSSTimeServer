@@ -124,6 +124,19 @@ https://forum.arduino.cc/t/zs-042-ds3231-rtc-module/268862/33
 
 ---
 
+<p align="center">
+  <img src="https://github.com/user-attachments/assets/d4d64a5c-a8c9-4312-be50-51cba86c3e8f" align="middle"><b>   GNSS BPS NOTICE   </b><img src="https://github.com/user-attachments/assets/2779999e-3e26-4f7d-a5fa-82bd57308ac0" align="middle">
+</p>
+
+Please note that the vast majority of GNSS modules come pre-configured for 9600 bps serial communication. While this supposedly is a fit for the GPS communication, it may not be enough for other GNSS networks, which work or may work with faster speeds.
+
+So, you will find in the code that I favor 115200 for GNSS module bps speed, which is the practical limit and works great if you set your GNSS module to 10Hz as opposed to the default 1Hz updates, for the modules I tested.
+
+There's a number of applications capable of changing a GNSS module frequency and bps; one I know that works for several module brands is called GnssToolKit3.
+
+---
+
+
 Libraries:
 
 -	paulstoffregen/Time@^1.6
