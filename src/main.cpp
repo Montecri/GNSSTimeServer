@@ -36,6 +36,11 @@ WiFiUDP Udp;
 #include "index_bytearray.h"
 #include "ota.h"
 
+// Being defined as build flag on platformio.ini, but can be uncommented here for testing without build flags
+// Please note the pin assignment for the ETHERNET_ENABLED build is slightly different from the WiFi only build
+// If you flash the WiFi only build to an ETHERNET_ENABLED wired hardware your sync led (green - pin 19) will not get lit
+// and the toggle/wifi button (pin 5) will not work. This can be frustrating if you don't pay attention and can lead to you
+// spending a long time trying to debug what you think is a hardware issue when in fact it's just a software configuration issue.
 // #define ETHERNET_ENABLED
 
 // Create a U8g2log object
@@ -70,6 +75,7 @@ long int pps_blink_time = 0;
 // Web OTA Upgrade
 #include <Update.h>
 
+// Initialize GNSS Serial on second UART. First one remains available for debugging - Cristiano - 20250125
 HardwareSerial ss(2);
 WebServer server(80);
 
@@ -220,7 +226,25 @@ int lastState = HIGH; // record last button state to support debouncing
 const char compile_date[] = __DATE__ " " __TIME__;
 
 // #define DEBUG // Comment this in order to remove debug code from release version
-//  #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+// #define DEBUG_GPS // Uncomment this to receive GPS messages in debug output
+
+#ifdef DEBUG_GPS
+#if defined(ARDUINO_ARCH_ESP8266)
+#define DEBUG_GPS_PRINT(x) Serial.print(x)
+#define DEBUG_GPS_PRINTDEC(x) Serial.print(x, DEC)
+#define DEBUG_GPS_PRINTLN(x) Serial.println(x)
+#elif defined(ESP32)
+#define DEBUG_GPS_PRINT(x) Serial.print(String(xPortGetCoreID()) + " - " + String(x))
+#define DEBUG_GPS_PRINTDEC(x) Serial.print(x, DEC)
+#define DEBUG_GPS_PRINTLN(x) Serial.println(String(xPortGetCoreID()) + " - " + String(x))
+#else
+#error Unknown architecture
+#endif
+#else
+#define DEBUG_GPS_PRINT(x)
+#define DEBUG_GPS_PRINTDEC(x)
+#define DEBUG_GPS_PRINTLN(x)
+#endif
 
 #ifdef DEBUG
 #if defined(ARDUINO_ARCH_ESP8266)
@@ -231,9 +255,6 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define DEBUG_PRINT(x) Serial.print(String(xPortGetCoreID()) + " - " + String(x))
 #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
 #define DEBUG_PRINTLN(x) Serial.println(String(xPortGetCoreID()) + " - " + String(x))
-// #define DEBUG_PRINT(x) Serial.print(x)
-// #define DEBUG_PRINTDEC(x) Serial.print(x, DEC)
-// #define DEBUG_PRINTLN(x) Serial.println(x)
 #else
 #error Unknown architecture
 #endif
@@ -242,6 +263,28 @@ const char compile_date[] = __DATE__ " " __TIME__;
 #define DEBUG_PRINTDEC(x)
 #define DEBUG_PRINTLN(x)
 #endif
+
+void safeSyslog(uint16_t pri, const char *msg)
+{
+#if defined(ETHERNET_ENABLED)
+  if ((WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) || ETH.localIP() != IPAddress(0, 0, 0, 0))
+#else
+  if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0))
+#endif
+  {
+    syslog.log(pri, msg);
+  }
+}
+
+void safeSyslogf(uint16_t pri, const char *format, ...)
+{
+  char buf[256];
+  va_list args;
+  va_start(args, format);
+  vsnprintf(buf, sizeof(buf), format, args);
+  va_end(args);
+  safeSyslog(pri, buf);
+}
 
 String return_reset_reason(int reason)
 {
@@ -414,30 +457,42 @@ void KeyCheck()
 
 // littleFS routines
 
+// More robust version of readData
 String readData(const char *filename)
 {
   DEBUG_PRINT("Reading data from ");
-  DEBUG_PRINT(filename);
-  File file = LittleFS.open(filename, "r");
+  DEBUG_PRINTLN(filename);
 
-  String data = "";
+  if (!LittleFS.exists(filename))
+  {
+    DEBUG_PRINT("ERROR: File does not exist: ");
+    DEBUG_PRINTLN(filename);
+    return "";
+  }
+
+  File file = LittleFS.open(filename, "r");
   if (!file)
   {
-    DEBUG_PRINTLN("ERROR: File open failed!");
+    DEBUG_PRINT("ERROR: File open failed: ");
+    DEBUG_PRINTLN(filename);
+    return "";
+  }
+
+  String data = "";
+  if (file.available())
+  {
+    data = file.readString();
+    data.trim(); // removes trailing \n / \r\n
   }
   else
   {
-
-    if (file.available())
-    {
-      data = file.readString();
-    }
-    DEBUG_PRINT(" : ");
-    DEBUG_PRINTLN(data);
-
-    file.close();
+    DEBUG_PRINTLN("WARNING: File is empty");
   }
 
+  DEBUG_PRINT("Data read: ");
+  DEBUG_PRINTLN(data);
+
+  file.close();
   return data;
 }
 
@@ -541,7 +596,7 @@ String convS(const char *a)
 // void handleRoot()
 void handleJSON()
 {
-  syslog.logf(LOG_INFO, "JSON requested from %s", server.client().remoteIP().toString().c_str());
+  safeSyslogf(LOG_INFO, "JSON requested from %s", server.client().remoteIP().toString().c_str());
 
   char webpage[2048];
   char timestr[32];
@@ -605,7 +660,7 @@ void handleJSON()
   freeHeap = esp_get_free_heap_size() / 1024;
   minimumHeap = esp_get_minimum_free_heap_size() / 1024;
   idfVersion = esp_get_idf_version();
-  internalTemp = (temprature_sens_read() - 32) / 1.8; // Temp is only correctly captured when WiFi active, ottherwise will always return 128 F (53.33 C)
+  internalTemp = (temprature_sens_read() - 32) / 1.8; // Temp is only correctly captured when WiFi active, otherwise will always return 128 F (53.33 C)
 #endif
 
   String locked = gpsLocked ? "True" : "False";
@@ -657,7 +712,7 @@ void handleRoot()
 {
   const char *dataType = "text/html";
 
-  syslog.logf(LOG_INFO, "Webpage requested from %s", server.client().remoteIP().toString().c_str());
+  safeSyslogf(LOG_INFO, "Webpage requested from %s", server.client().remoteIP().toString().c_str());
 
   server.sendHeader(F("Content-Encoding"), F("gzip"));
 
@@ -735,7 +790,7 @@ void startHttpServer()
 #endif
   server.begin();
   DEBUG_PRINTLN(F("HTTP server started"));
-  syslog.log(LOG_INFO, "HTTP server started");
+  safeSyslog(LOG_INFO, "HTTP server started");
 }
 
 void enableWifiAP()
@@ -804,7 +859,7 @@ void enableWifi()
     DEBUG_PRINTLN(F("WiFi connected!"));
     DEBUG_PRINT("IP address: ");
     DEBUG_PRINTLN(myIP);
-    syslog.logf(LOG_INFO, "WiFi connected as %s", myIP.toString().c_str());
+    safeSyslogf(LOG_INFO, "WiFi connected as %s", myIP.toString().c_str());
 #endif
     startHttpServer();
   }
@@ -814,7 +869,7 @@ void disableWifi()
 {
   server.stop();
   DEBUG_PRINTLN(F("HTTP server stopped"));
-  syslog.log(LOG_WARNING, "WiFi disabled!");
+  safeSyslog(LOG_WARNING, "WiFi disabled!");
   if (WiFi.getMode() == WIFI_AP)
   {
     WiFi.softAPdisconnect(true);
@@ -913,7 +968,7 @@ void PrintRTCstatus()
   else
   {
     DEBUG_PRINTLN("ERROR: cannot read the RTC.");
-    syslog.log(LOG_ERR, "ERROR: cannot read the RTC.");
+    safeSyslog(LOG_ERR, "ERROR: cannot read the RTC.");
   }
 }
 
@@ -943,7 +998,7 @@ void SetRTC(time_t t)
   else
   {
     DEBUG_PRINT("ERROR: cannot set RTC time");
-    syslog.log(LOG_ERR, "ERROR: cannot set RTC time");
+    safeSyslog(LOG_ERR, "ERROR: cannot set RTC time");
   }
 }
 
@@ -1170,7 +1225,7 @@ void SyncWithGPS()
     syncTime = now(); // remember time of this sync
     if (!gpsLocked)
     {
-      syslog.logf(LOG_INFO, "GPS sychronized - %d satellites", gps.satellites.value());
+      safeSyslogf(LOG_INFO, "GPS sychronized - %d satellites", gps.satellites.value());
     }
     gpsLocked = true;                  // set flag that time is reflects GPS time
     UpdateRTC();                       // update internal RTC clock periodically
@@ -1229,7 +1284,7 @@ void SyncCheck(void *parameter)
   {
     if (gpsLocked)
     {
-      syslog.log(LOG_INFO, "GPS sych lost!");
+      safeSyslog(LOG_INFO, "GPS sych lost!");
     }
     gpsLocked = false; // flag that clock is no longer in GPS sync
     DEBUG_PRINTLN("Called SyncWithRTC from SyncCheck");
@@ -1322,9 +1377,10 @@ void FeedGpsParser()
   {
     char c = ss.read(); // read in all available chars
     gps.encode(c);      // and feed chars to GPS parser
-                        // Serial.write(c); // Uncomment for some extra debug info if in doubt about GPS feed
+                        // Serial.write(c);    // Uncomment for some extra debug info if in doubt about GPS feed
 #ifdef DEBUG_GPS
-    DEBUG_PRINT(c);
+    DEBUG_GPS_PRINT(c);
+    // Serial.write(c);
 #endif
     // Will toggle LOCK_LED at each pass if not locked, so user can see the GPS is actually doing something
     if (!gpsLocked)
@@ -1411,7 +1467,7 @@ void processRFC868()
   // client.setNoDelay(true); // Unecessary for UDP
   if (client.connected())
   {
-    // syslog.logf(LOG_INFO, "RDATE request from %s", client.remoteIP().toString().c_str());
+    // safeSyslogf(LOG_INFO, "RDATE request from %s", client.remoteIP().toString().c_str());
     //  Serial.println(client.remoteIP().toString().c_str());
 
     // Send Data to connected client
@@ -1504,7 +1560,7 @@ void processNTP()
     }
     Serial.println();
 
-    syslog.logf(LOG_INFO, "   Received UDP packet size %d  LI, Vers, Mode : 0x%02x  Stratum: 0x%02x  Polling: 0x%02x  Precision: 0x%02x", packetSize, LIVNMODE, STRATUM, POLLING, PRECISION);
+    safeSyslogf(LOG_INFO, "   Received UDP packet size %d  LI, Vers, Mode : 0x%02x  Stratum: 0x%02x  Polling: 0x%02x  Precision: 0x%02x", packetSize, LIVNMODE, STRATUM, POLLING, PRECISION);
 #endif
 
     packetBuffer[0] = 0b00100100; // LI, Version, Mode
@@ -1626,7 +1682,7 @@ void processNTP()
     Udp.write(packetBuffer, NTP_PACKET_SIZE);
     Udp.endPacket();
 
-    // syslog.logf(LOG_INFO, "NTP request from %s", Remote.toString().c_str());
+    // safeSyslogf(LOG_INFO, "NTP request from %s", Remote.toString().c_str());
   }
 #if defined(ESP32)
   vTaskDelay(1);
@@ -1637,9 +1693,10 @@ void processNTP()
 
 void setup()
 {
-#ifdef DEBUG
+#if defined(DEBUG) || defined(DEBUG_GPS)
   Serial.begin(115200); // set serial monitor rate to 115200 bps
 #endif
+  // Serial.begin(115200); // set serial monitor rate to 115200 bps
 
   DEBUG_PRINTLN(F("Starting setup..."));
   pinMode(LOCK_LED, OUTPUT);
@@ -1661,9 +1718,9 @@ void setup()
 
 #if defined(ARDUINO_ARCH_ESP8266)
 #elif defined(ESP32)
-  u8g2log.print("Reset reason: ");
-  u8g2log.print(return_reset_reason(esp_reset_reason()));
-  delay(1000);
+          u8g2log.print("Reset reason: ");
+          u8g2log.print(return_reset_reason(esp_reset_reason()));
+          delay(1000);
 #else
 #error Unknown architecture
 #endif
@@ -1681,15 +1738,25 @@ void setup()
   LittleFS.begin();   // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
   u8g2log.print(" Done\n");
 #elif defined(ESP32)
-          ss.begin(115200);
           Wire.begin(21U, 22U);
           LittleFS.begin(true); // Init storage for WiFi SSID/PSK -- true = FORMAT_LITTLEFS_IF_FAILED
           u8g2log.print(" Done\n");
 #if defined(ETHERNET_ENABLED)
+// For some reason Freenove board is resetting the baud rate on ETH build - 20250124
+#define BAUD_RATE 115200
           u8g2log.print("Starting ETH...");
           setupW5500();
+          // Extra delay to avoid panic restart possible due to unfinished intialization
+          // Need to investigate better in the future - Cristiano - 20250125
+          delay(1000);
           u8g2log.print(" Done\n");
 #endif
+
+#ifndef BAUD_RATE
+#define BAUD_RATE 115200
+#endif
+          ss.begin(BAUD_RATE);
+
 #else
 #error Unknown architecture
 #endif
@@ -1702,7 +1769,7 @@ void setup()
   {
     Rtc.SetIsRunning(true);
     DEBUG_PRINTLN(F("RTC had to be force started"));
-    syslog.log(LOG_WARNING, "RTC had to be force started");
+    // safeSyslog(LOG_WARNING, "RTC had to be force started");
     u8g2log.print("RTC had to be force started\n");
   }
 
@@ -1722,21 +1789,6 @@ void setup()
   // Serial.begin(9600);
   // delay(2000);
 
-  u8g2log.print("Starting SYSLOG...");
-  syslogserver = readData("/syslogserver"); // Password follows
-  syslogserver.trim();
-
-  IPAddress ip;
-  ip.fromString(syslogserver);
-  // Syslog syslog(udpClient, syslogserver, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
-  syslog.server(ip, SYSLOG_PORT);
-  syslog.deviceHostname(HOSTNAME);
-  syslog.appName(HOSTNAME);
-  syslog.defaultPriority(LOG_DAEMON);
-  u8g2log.print("Done\n");
-  delay(1000);
-
-  DEBUG_PRINTLN("Iniciado");
   // DEBUG_PRINTLN(F(xPortGetCoreID()));
 
   u8g2log.print("Start RTC Sync...");
@@ -1755,10 +1807,31 @@ void setup()
   delay(1000);
 
   u8g2log.print("Start WiFi process...");
-  statusWifi = atoi(readData("/statusWifi").c_str()); // Restore last WiFi state
+
+  String statusWifiString = readData("/statusWifi"); // Restore last WiFi status
+  if (statusWifiString == "0" || statusWifiString == "1")
+  {
+    statusWifi = atoi(statusWifiString.c_str());
+  }
   processWifi();
   u8g2log.print("Done\n");
   delay(1000);
+
+  u8g2log.print("Starting SYSLOG...");
+  syslogserver = readData("/syslogserver"); // Password follows
+  syslogserver.trim();
+
+  IPAddress ip;
+  ip.fromString(syslogserver);
+  // Syslog syslog(udpClient, syslogserver, SYSLOG_PORT, HOSTNAME, "esp-ntp", LOG_DAEMON);
+  syslog.server(ip, SYSLOG_PORT);
+  syslog.deviceHostname(HOSTNAME);
+  syslog.appName(HOSTNAME);
+  syslog.defaultPriority(LOG_DAEMON);
+  u8g2log.print("Done\n");
+  delay(1000);
+
+  DEBUG_PRINTLN("Iniciado");
 
   // Startup UDP
   u8g2log.print("Start NTP/RFC868...");
@@ -1769,7 +1842,7 @@ void setup()
 
 #if defined(ARDUINO_ARCH_ESP8266)
 #elif defined(ESP32)
-          u8g2log.print("Staring tasks...");
+          u8g2log.print("Starting tasks...");
           // xTaskCreatePinnedToCore(
           // Task1code, /* Function to implement the task */
           //"Task1", /* Name of the task */
@@ -1810,13 +1883,13 @@ void loop()
   UpdateDisplay(); // if time has changed, display it
   server.handleClient();
 
-  #if defined(ARDUINO_ARCH_ESP8266)
-    if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
-  #elif defined(ESP32)
-    if (xTaskGetTickCount() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
-  #else
-  #error Unknown architecture
-  #endif
+#if defined(ARDUINO_ARCH_ESP8266)
+  if (millis() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+#elif defined(ESP32)
+          if (xTaskGetTickCount() - pps_blink_time > PPS_BLINK_INTERVAL) // If x milliseconds passed, then it's time to switch led off for blink effect
+#else
+#error Unknown architecture
+#endif
     digitalWrite(PPS_LED, LOW);
   else
     digitalWrite(PPS_LED, HIGH);
