@@ -1,5 +1,6 @@
-# GNSS Time Servers Built From Scratch - The PPSv2 Edition
+# <p align="center">GNSS Time Servers Built From Scratch - The PPSv2 Edition</p>
 
+<p align="center"><img width="643" height="299" alt="image" src="https://github.com/user-attachments/assets/41e96565-0ac0-477e-aec7-db41561343a0" /></p>
 
 Two homemade time servers, one obsession: turning a noisy one-pulse-per-second tick from the GPS satellites overhead into a clock the rest of your network can trust. They come from the same workbench and the same stubborn insistence on building from scratch — they differ only in **how precise you need to be**.
 
@@ -11,7 +12,7 @@ Same maker, same itch, three orders of magnitude apart.
 <br>
 
 📰 The story behind both builds, in two parts:
-*[An IoT Maker Tale: Stratum-1 Time Server Built From Scratch](https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/)* — and its sequel, *An IoT Maker Tale, Part II: From Stratum-1 NTP to a Sub-Microsecond PTP Grandmaster* (link to be added).
+*[An IoT Maker Tale: Stratum-1 Time Server Built From Scratch](https://www.linkedin.com/pulse/iot-maker-tale-stratum-1-time-server-built-from-scratch-monteiro/)* — and its sequel, *[An IoT Maker Tale, Part II: From Stratum-1 NTP to a Sub-Microsecond PTP Grandmaster](https://www.linkedin.com/pulse/iot-maker-tale-part-ii-from-stratum-1-ntprdate-ptpv2-monteiro-ja6ef)*.
 
 <br>
 
@@ -37,6 +38,9 @@ Both are GNSS-disciplined, self-contained, dissectable-from-the-inside time sour
 
 The short version: reach for the **GNSS Time Server** when you want a portable box that keeps any network's clocks accurate and runs anywhere. Reach for the **PTP Grandmaster** when milliseconds aren't enough and you need wired sub-microsecond precision.
 
+<p align="center"><img width="614" height="461" alt="image" src="https://github.com/user-attachments/assets/63dc523a-7494-4759-a93a-cbdbbd41cdf3" /></p>
+
+
 <br>
 
 ---
@@ -51,6 +55,10 @@ That PPS edge is the heartbeat. Everything downstream is a question of how faith
 - The **PTP Grandmaster** goes further: it captures the PPS edge *inside the GPIO interrupt* and uses it to discipline the ESP32-P4's on-chip **PTP Hardware Clock (PHC)** through a software servo, then hardware-timestamps PTP frames as they leave the wire. No external RTC — the servo itself "remembers" the crystal's drift and coasts through brief outages.
 
 The single biggest lever on precision is the GNSS module. A navigation-grade receiver (NEO-6m, ATGM336H) assumes it's moving and constantly re-estimates its position, and that noise rides straight onto the PPS edge. A **timing-mode** receiver like the **AllyStar TAU1201** knows it's stationary and spends its math on the time solution instead — dropping PPS jitter from hundreds of nanoseconds to roughly **10 ns**. The GNSS Time Server works beautifully with either; the PTP Grandmaster's sub-microsecond numbers depend on it.
+
+<p align="center"><a href="http://www.youtube.com/watch?feature=player_embedded&v=QWhQtFGGHVM" target="_blank">
+ <img src="http://img.youtube.com/vi/QWhQtFGGHVM/mqdefault.jpg" alt="Watch the video" width="320" border="10" />
+</a>
 
 ---
 
