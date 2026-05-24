@@ -5,6 +5,9 @@
 ![GitHub commit activity](https://img.shields.io/github/commit-activity/t/Montecri/GNSSTimeServer)
 ![GitHub Issues or Pull Requests](https://img.shields.io/github/issues/Montecri/GNSSTimeServer)
 
+<p align="center"><a href="[https://docs.google.com/forms/d/e/1FAIpQLSchZhBenU4u7z4XQDj6ZXXRinHSWwy8loy8uxbl7-j-GinHIg/viewform](https://github.com/Montecri/GNSSTimeServer/src/PTP)" target="_blank">
+ <img width="614" height="410" alt="image" src="https://github.com/user-attachments/assets/311b68d3-3a03-42a4-b5e9-1acb427a1085" /></a></p>
+
 <p align="center"><a href="https://docs.google.com/forms/d/e/1FAIpQLSchZhBenU4u7z4XQDj6ZXXRinHSWwy8loy8uxbl7-j-GinHIg/viewform" target="_blank">
  <img src="https://github.com/Montecri/GNSSTimeServer/assets/38574378/809ed768-7c58-455c-b6e0-5b2a80768d20" alt="Answer Survey" width="64" border="10" />
  <b>Answer the survey: Crowdfunding for GNSS Time Server</b>
@@ -23,7 +26,7 @@
  <img src="http://img.youtube.com/vi/qk_Gvh3UzQg/mqdefault.jpg" alt="Watch the video" width="320" border="10" />
 </a></p>
 
-## Ethernet/WiFi enabled, GNSS fed, NTP/RDATE server based on ESP8266/ESP32 and Arduino
+## Ethernet/WiFi enabled, GNSS fed, NTP/RDATE/PTP server based on ESP8266/ESP32 and Arduino
 
 <br>
 
