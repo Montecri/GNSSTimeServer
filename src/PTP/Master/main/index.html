@@ -1,0 +1,674 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%234ec9b0'/%3E%3Cstop%20offset='1'%20stop-color='%237aa2f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle%20cx='32'%20cy='32'%20r='28'%20fill='%230b1018'%20stroke='url(%23g)'%20stroke-width='4'/%3E%3Ccircle%20cx='32'%20cy='11'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='53'%20cy='32'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='32'%20cy='53'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='11'%20cy='32'%20r='2'%20fill='%234ec9b0'/%3E%3Cline%20x1='32'%20y1='32'%20x2='32'%20y2='16'%20stroke='%23e6edf7'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Cline%20x1='32'%20y1='32'%20x2='44'%20y2='32'%20stroke='%237aa2f7'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='3'%20fill='%23e6edf7'/%3E%3Ccircle%20cx='50'%20cy='14'%20r='7'%20fill='%230b1018'/%3E%3Ccircle%20cx='50'%20cy='14'%20r='5'%20fill='%2350fa7b'/%3E%3C/svg%3E">
+<title>PTP Master &mdash; ESP32-P4</title>
+<style>
+  :root {
+    --bg-0:#0b1018; --bg-1:#121a26; --bg-2:#1a2536; --bg-3:#233047;
+    --line:#2a3a55; --line-soft:#1f2c42;
+    --text:#e6edf7; --text-dim:#8fa1bf; --text-mute:#5a6c8a;
+    --accent:#4ec9b0; --accent-2:#7aa2f7;
+    --ok:#50fa7b; --warn:#ffb86c; --err:#ff5577;
+    --info:#8be9fd; --purple:#bd93f9; --gold:#f1c40f;
+    --grid-glow:rgba(78,201,176,0.08);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Consolas,"Courier New",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --emoji:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Segoe UI Symbol",sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg-0); color:var(--text); font-family:var(--sans); -webkit-font-smoothing:antialiased; min-height:100vh; }
+  body {
+    background:
+      radial-gradient(circle at 15% 0%, rgba(78,201,176,0.06) 0%, transparent 40%),
+      radial-gradient(circle at 85% 100%, rgba(122,162,247,0.05) 0%, transparent 40%),
+      linear-gradient(180deg,var(--bg-0) 0%,#060a12 100%);
+    background-attachment:fixed;
+  }
+  body::before {
+    content:""; position:fixed; inset:0;
+    background-image:
+      linear-gradient(var(--grid-glow) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid-glow) 1px,transparent 1px);
+    background-size:48px 48px; pointer-events:none; z-index:0; opacity:0.4;
+  }
+  .container { position:relative; z-index:1; max-width:1280px; margin:0 auto; padding:28px 24px 48px; }
+
+  header { display:flex; align-items:center; justify-content:space-between; gap:16px;
+           padding-bottom:20px; border-bottom:1px solid var(--line-soft); margin-bottom:24px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:14px; }
+  .brand .mark { width:44px; height:44px; border-radius:10px;
+                 background:linear-gradient(135deg,var(--accent) 0%,var(--accent-2) 100%);
+                 display:flex; align-items:center; justify-content:center;
+                 font-family:var(--mono); font-weight:800; font-size:18px; color:var(--bg-0);
+                 letter-spacing:-0.5px; box-shadow:0 0 24px rgba(78,201,176,0.3); }
+  .brand h1 { margin:0; font-size:20px; font-weight:600; letter-spacing:0.2px; }
+  .brand .sub { margin:2px 0 0; font-family:var(--mono); font-size:11px; color:var(--text-dim); letter-spacing:0.5px; }
+  .fw-ver { color:var(--accent); font-weight:600; }
+
+  .status-pill { display:inline-flex; align-items:center; gap:8px; padding:8px 14px;
+                 border-radius:999px; background:rgba(80,250,123,0.08);
+                 border:1px solid rgba(80,250,123,0.3);
+                 font-family:var(--mono); font-size:12px; letter-spacing:1px; color:var(--ok);
+                 transition:all 0.3s ease; }
+  .status-pill.warn { background:rgba(255,184,108,0.08); border-color:rgba(255,184,108,0.3); color:var(--warn); }
+  .status-pill.warn .dot { background:var(--warn); box-shadow:0 0 8px var(--warn); }
+  .status-pill.err { background:rgba(255,85,119,0.08); border-color:rgba(255,85,119,0.3); color:var(--err); }
+  .status-pill.err .dot { background:var(--err); box-shadow:0 0 8px var(--err); }
+  .status-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--ok);
+                      box-shadow:0 0 8px var(--ok); animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(0.85);} }
+
+  .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:18px; }
+  .card { background:linear-gradient(180deg,var(--bg-1) 0%,var(--bg-2) 100%);
+          border:1px solid var(--line-soft); border-radius:14px; padding:18px 20px;
+          position:relative; overflow:hidden; transition:border-color 0.2s ease; }
+  .card:hover { border-color:var(--line); }
+  .card::before { content:""; position:absolute; top:0; left:0; right:0; height:1px;
+                  background:linear-gradient(90deg,transparent,var(--line),transparent); }
+  .card-header { display:flex; align-items:center; justify-content:space-between;
+                 margin-bottom:14px; padding-bottom:10px; border-bottom:1px dashed var(--line-soft); }
+  .card-header h2 { margin:0; font-size:11px; font-weight:700; letter-spacing:2px;
+                    text-transform:uppercase; color:var(--text-dim); }
+  .card-header .badge { font-family:var(--mono); font-size:10px; color:var(--text-mute); letter-spacing:0.5px; }
+
+  .col-3{grid-column:span 3;} .col-4{grid-column:span 4;} .col-5{grid-column:span 5;}
+  .col-6{grid-column:span 6;} .col-7{grid-column:span 7;} .col-8{grid-column:span 8;}
+  .col-12{grid-column:span 12;}
+  @media (max-width:960px){ .col-3,.col-4,.col-5,.col-6,.col-7,.col-8{grid-column:span 12;} }
+
+  .rows { display:flex; flex-direction:column; gap:2px; }
+  .row { display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:12px;
+         padding:9px 4px; border-bottom:1px solid transparent; transition:background 0.15s ease; }
+  .row:hover { background:rgba(255,255,255,0.015); }
+  .row + .row { border-top:1px solid var(--line-soft); }
+  .row .icon { font-family:var(--emoji); font-size:18px; line-height:1;
+               text-align:center; width:28px; display:inline-flex;
+               align-items:center; justify-content:center; filter:saturate(1.1); }
+  .row .label { font-size:13px; color:var(--text); font-weight:500; letter-spacing:0.1px; }
+  .row .label .hint { display:block; font-family:var(--mono); font-size:10px;
+                      color:var(--text-mute); font-weight:400; margin-top:2px; letter-spacing:0.3px; }
+  .row .value { font-family:var(--mono); font-size:12.5px; color:var(--text);
+                text-align:right; font-variant-numeric:tabular-nums;
+                transition:color 0.3s ease; }
+  .row .value.dim{color:var(--text-dim);} .row .value.ok{color:var(--ok);}
+  .row .value.warn{color:var(--warn);} .row .value.err{color:var(--err);}
+  .row .value.info{color:var(--info);} .row .value.accent{color:var(--accent);}
+  .row .value.purple{color:var(--purple);}
+
+  .chip { display:inline-block; padding:2px 8px; border-radius:4px;
+          font-family:var(--mono); font-size:11px; letter-spacing:0.5px;
+          border:1px solid currentColor; background:rgba(255,255,255,0.02); }
+  .chip.ok{color:var(--ok); background:rgba(80,250,123,0.08);}
+  .chip.warn{color:var(--warn); background:rgba(255,184,108,0.08);}
+  .chip.err{color:var(--err); background:rgba(255,85,119,0.08);}
+  .chip.info{color:var(--info); background:rgba(139,233,253,0.08);}
+
+  .hero { grid-column:span 12; display:grid; grid-template-columns:repeat(4,1fr); gap:18px; }
+  @media (max-width:960px){ .hero{grid-template-columns:repeat(2,1fr);} }
+  .metric { background:linear-gradient(180deg,var(--bg-1) 0%,var(--bg-2) 100%);
+            border:1px solid var(--line-soft); border-radius:14px; padding:18px 20px;
+            position:relative; overflow:hidden; transition:border-color 0.3s ease; }
+  .metric .metric-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .metric .metric-head .icon { font-family:var(--emoji); font-size:18px; }
+  .metric .metric-head .label { font-size:10px; letter-spacing:2px; text-transform:uppercase;
+                                color:var(--text-dim); font-weight:700; }
+  .metric .big { font-family:var(--mono); font-size:26px; font-weight:700;
+                 color:var(--text); letter-spacing:-0.5px; line-height:1.1;
+                 transition:color 0.3s ease; }
+  .metric .big .unit { font-size:14px; color:var(--text-dim); }
+  .metric .sub { margin-top:6px; font-family:var(--mono); font-size:11px;
+                 color:var(--text-mute); letter-spacing:0.3px; }
+  .metric.locked { border-color:rgba(80,250,123,0.25); }
+  .metric.locked .big { color:var(--ok); }
+  .metric.holdover { border-color:rgba(255,184,108,0.25); }
+  .metric.holdover .big { color:var(--warn); }
+  .metric.fault, .metric.no-link { border-color:rgba(255,85,119,0.25); }
+  .metric.fault .big, .metric.no-link .big { color:var(--err); }
+
+  .tasks { width:100%; border-collapse:collapse; font-size:12px; font-family:var(--mono); }
+  .tasks thead th { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+                    color:var(--text-dim); font-weight:600; font-size:10px;
+                    letter-spacing:1.5px; text-transform:uppercase; }
+  .tasks tbody td { padding:7px 10px; border-bottom:1px solid var(--line-soft);
+                    color:var(--text); font-variant-numeric:tabular-nums; }
+  .tasks tbody tr:hover { background:rgba(255,255,255,0.02); }
+  .tasks .tname { display:inline-flex; align-items:center; gap:8px; }
+  .tasks .tname .icon { font-family:var(--emoji); font-size:14px; }
+  .prio { display:inline-block; min-width:22px; text-align:center; padding:1px 6px;
+          border-radius:4px; font-size:11px; font-weight:700; }
+  .prio.p7{background:rgba(255,85,119,0.15); color:var(--err);}
+  .prio.p6{background:rgba(255,184,108,0.15); color:var(--warn);}
+  .prio.p5{background:rgba(241,196,15,0.15); color:var(--gold);}
+  .prio.p2{background:rgba(139,233,253,0.15); color:var(--info);}
+  .prio.p1{background:rgba(122,162,247,0.15); color:var(--accent-2);}
+  .bar { display:inline-block; width:60px; height:5px; background:var(--bg-3);
+         border-radius:99px; overflow:hidden; vertical-align:middle; margin-right:8px; }
+  .bar > i { display:block; height:100%;
+             background:linear-gradient(90deg,var(--accent),var(--accent-2));
+             border-radius:99px; transition:width 0.5s ease; }
+
+  footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line-soft);
+           text-align:center; font-family:var(--mono); font-size:10.5px;
+           color:var(--text-mute); letter-spacing:1px; }
+  footer a { color:var(--accent); text-decoration:none; border-bottom:1px dashed transparent;
+             transition:border-color 0.2s ease; }
+  footer a:hover { border-bottom-color:var(--accent); }
+  footer .live { color:var(--accent); margin-left:6px; }
+  footer .sep { margin:0 8px; color:var(--text-mute); opacity:0.5; }
+
+  /* OTA link button in header */
+  .ota-link {
+    display:inline-flex; align-items:center; gap:8px;
+    padding:8px 14px; border-radius:999px;
+    background:rgba(122,162,247,0.08);
+    border:1px solid rgba(122,162,247,0.3);
+    font-family:var(--mono); font-size:12px; letter-spacing:1px;
+    color:var(--accent-2); text-decoration:none;
+    transition:all 0.2s ease;
+    margin-right:8px;
+  }
+  .ota-link:hover {
+    background:rgba(122,162,247,0.15);
+    border-color:var(--accent-2);
+    transform:translateY(-1px);
+  }
+  .ota-link .icon { font-family:var(--emoji); font-size:14px; }
+
+  .header-actions { display:flex; align-items:center; gap:0; flex-wrap:wrap; }
+
+  /* fade flash on update */
+  .flash { animation:flash 0.6s ease; }
+  @keyframes flash { 0%{background:rgba(78,201,176,0.1);} 100%{background:transparent;} }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="brand">
+      <div class="mark">P4</div>
+      <div>
+        <h1>PTP Master &mdash; ESP32-P4 Grandmaster</h1>
+        <div class="sub">IEEE 1588-2008 &middot; L2/Ethernet Transport &middot; Domain 0
+          &middot; <span class="fw-ver" id="hdr_fw">fw &mdash;</span></div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <a class="ota-link" href="/ota" title="Firmware update">
+        <span class="icon">&#x1F680;</span><span>OTA UPDATE</span>
+      </a>
+      <div class="status-pill" id="hdrStatus">
+        <span class="dot"></span><span id="hdrStatusText">CONNECTING&hellip;</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- HERO METRICS -->
+    <div class="hero">
+      <div class="metric" id="m_state">
+        <div class="metric-head"><span class="icon">&#x1F512;</span><span class="label">Sync State</span></div>
+        <div class="big" id="v_state">&mdash;</div>
+        <div class="sub" id="v_state_sub">awaiting data</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="icon">&#x1F3AF;</span><span class="label">Offset</span></div>
+        <div class="big" id="v_offset">&mdash;</div>
+        <div class="sub" id="v_offset_sub">median window: 5</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="icon">&#x269B;&#xFE0F;</span><span class="label">Frequency Adj.</span></div>
+        <div class="big" id="v_freq">&mdash;</div>
+        <div class="sub" id="v_freq_sub">Kp=0.4 &middot; Ki=0.3</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="icon">&#x1F6F0;&#xFE0F;</span><span class="label">GPS / PPS</span></div>
+        <div class="big" id="v_gps">&mdash;</div>
+        <div class="sub" id="v_gps_sub">&mdash;</div>
+      </div>
+    </div>
+
+    <!-- DEVICE -->
+    <div class="card col-4">
+      <div class="card-header"><h2>Device</h2><span class="badge" id="b_dev">ESP32-P4</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F9E0;</span>
+          <span class="label">Chip<span class="hint">Dual RISC-V HP core</span></span>
+          <span class="value" id="v_chip">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x26A1;</span>
+          <span class="label">CPU Frequency</span>
+          <span class="value accent" id="v_cpufreq">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E6;</span>
+          <span class="label">Project<span class="hint" id="v_appver">app version &mdash;</span></span>
+          <span class="value" id="v_proj">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4DD;</span>
+          <span class="label">ESP-IDF</span>
+          <span class="value" id="v_idf">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6E0;&#xFE0F;</span>
+          <span class="label">Compile time</span>
+          <span class="value dim" id="v_compile">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F511;</span>
+          <span class="label">ELF SHA-256</span>
+          <span class="value dim" id="v_sha">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4BE;</span>
+          <span class="label">Flash</span>
+          <span class="value" id="v_flash">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F551;</span>
+          <span class="label">Uptime</span>
+          <span class="value ok" id="v_uptime">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- MEMORY -->
+    <div class="card col-4">
+      <div class="card-header"><h2>Memory</h2><span class="badge">internal heap</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F49A;</span>
+          <span class="label">Free heap<span class="hint">MALLOC_CAP_INTERNAL</span></span>
+          <span class="value ok" id="v_heap_free">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4C9;</span>
+          <span class="label">Min ever free<span class="hint">low-water mark since boot</span></span>
+          <span class="value warn" id="v_heap_min">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F9F1;</span>
+          <span class="label">Largest free block</span>
+          <span class="value" id="v_heap_lfb">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3DB;&#xFE0F;</span>
+          <span class="label">RETENT_RAM<span class="hint">@ 0x4FF178D0</span></span>
+          <span class="value dim" id="v_retent">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4D0;</span>
+          <span class="label">RAM regions</span>
+          <span class="value dim" id="v_ram">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F50B;</span>
+          <span class="label">RTC RAM</span>
+          <span class="value dim" id="v_rtcram">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4BD;</span>
+          <span class="label">TCM</span>
+          <span class="value dim" id="v_tcm">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x267B;&#xFE0F;</span>
+          <span class="label">Leak delta<span class="hint">since baseline</span></span>
+          <span class="value ok" id="v_leak">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- NETWORK -->
+    <div class="card col-4">
+      <div class="card-header"><h2>Network</h2><span class="badge">EMAC &middot; L2TAP</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F50C;</span>
+          <span class="label">Link status</span>
+          <span class="value" id="v_link">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F310;</span>
+          <span class="label">IP address<span class="hint" id="v_ip_hint">&mdash;</span></span>
+          <span class="value info" id="v_ip">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3F7;&#xFE0F;</span>
+          <span class="label">MAC address</span>
+          <span class="value dim" id="v_mac">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E1;</span>
+          <span class="label">L2TAP<span class="hint">EtherType 0x88F7</span></span>
+          <span class="value" id="v_l2tap">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4EC;</span>
+          <span class="label">PTP multicast filter</span>
+          <span class="value dim" id="v_mcast">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F501;</span>
+          <span class="label">EMAC restarts<span class="hint">RX descriptor recovery</span></span>
+          <span class="value" id="v_emac">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6AB;</span>
+          <span class="label">Promiscuous</span>
+          <span class="value dim" id="v_promisc">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6E1;&#xFE0F;</span>
+          <span class="label">Watchdog<span class="hint">heap pressure recovery</span></span>
+          <span class="value ok" id="v_wdt">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- PTP / TIMING -->
+    <div class="card col-6">
+      <div class="card-header"><h2>PTP &middot; Timing</h2><span class="badge">grandmaster &middot; 2-step</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F451;</span>
+          <span class="label">Role<span class="hint">BMCA result</span></span>
+          <span class="value accent" id="v_role">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F194;</span>
+          <span class="label">Clock ID</span>
+          <span class="value dim" id="v_clockid">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F551;</span>
+          <span class="label">UTC time<span class="hint">from GPS &middot; gmtime_r</span></span>
+          <span class="value info" id="v_utc">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x23F3;</span>
+          <span class="label">TAI &minus; UTC offset</span>
+          <span class="value" id="v_tai">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E4;</span>
+          <span class="label">Sync interval</span>
+          <span class="value dim" id="v_sync_int">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E2;</span>
+          <span class="label">Announce interval</span>
+          <span class="value dim" id="v_ann_int">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F522;</span>
+          <span class="label">Sync seq &middot; Announce seq</span>
+          <span class="value" id="v_seq">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4CD;</span>
+          <span class="label">Path delay<span class="hint">slave-side measurement</span></span>
+          <span class="value dim" id="v_path">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F465;</span>
+          <span class="label">Active slaves<span class="hint">tracked &middot; 30s window</span></span>
+          <span class="value purple" id="v_slaves">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- SERVO -->
+    <div class="card col-6">
+      <div class="card-header"><h2>Servo &middot; Discipline</h2><span class="badge">PI &middot; linreg window 16</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F7E2;</span>
+          <span class="label">Servo state</span>
+          <span class="value ok" id="v_servo">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4CA;</span>
+          <span class="label">Integrator</span>
+          <span class="value" id="v_integ">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4C8;</span>
+          <span class="label">Lock quality<span class="hint">good samples / 64</span></span>
+          <span class="value ok" id="v_lockq">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x231A;</span>
+          <span class="label">PPS edges captured</span>
+          <span class="value" id="v_pps">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6AB;</span>
+          <span class="label">Sample rejects<span class="hint">offset &gt;100&micro;s from avg &middot; lifetime</span></span>
+          <span class="value ok" id="v_reject">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F50D;</span>
+          <span class="label">PHC residual<span class="hint">measured steady-state</span></span>
+          <span class="value dim" id="v_phc">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F198;</span>
+          <span class="label">Holdover timeout</span>
+          <span class="value dim" id="v_holdto">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x2705;</span>
+          <span class="label">Post-holdover settled</span>
+          <span class="value" id="v_settled">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6F0;&#xFE0F;</span>
+          <span class="label">GPS last update</span>
+          <span class="value" id="v_gpsage">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4A1;</span>
+          <span class="label">PPS LED<span class="hint">GPIO 3 &middot; 50 ms pulse</span></span>
+          <span class="value info" id="v_ppsled">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- TASKS -->
+    <div class="card col-12">
+      <div class="card-header"><h2>FreeRTOS Tasks</h2><span class="badge" id="b_tasks">&mdash; tasks</span></div>
+      <table class="tasks">
+        <thead>
+          <tr>
+            <th style="width:24%">Task</th>
+            <th style="width:10%">Priority</th>
+            <th style="width:14%">Stack</th>
+            <th style="width:18%">High-water mark</th>
+            <th style="width:10%">Core</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody id="tasksBody">
+          <tr><td colspan="6" style="text-align:center; color:var(--text-mute); padding:20px;">awaiting data&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <footer>
+    Last refresh <span class="live" id="lastRefresh">&mdash;</span>
+    <span class="sep">&middot;</span> auto-refresh every 5000 ms
+    <span class="sep">&middot;</span>
+    <a href="https://github.com/Montecri/GNSSTimeServer" target="_blank" rel="noopener">github.com/Montecri/GNSSTimeServer</a>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* ─── Icon map for known FreeRTOS task names ─── */
+const TASK_META = {
+  "ptp_rx":   { icon:"\u{1F4E5}", role:"L2TAP RX, hw timestamps, dispatch" },
+  "ptp_tx":   { icon:"\u{1F4E4}", role:"Sync / Announce / Delay_Resp" },
+  "gps":      { icon:"\u{1F6F0}\uFE0F", role:"NMEA parser \u00B7 UART1 @ 9600" },
+  "servo":    { icon:"\u2699\uFE0F", role:"PI servo, freq/step discipline" },
+  "pps_task": { icon:"\u{1F551}", role:"1-PPS edge handler, PHC capture" },
+  "pps_led":  { icon:"\u{1F4A1}", role:"PPS visual indicator (GPIO 3)" },
+  "led":      { icon:"\u{1F506}", role:"Status LED state machine" },
+  "display":  { icon:"\u{1F4FA}", role:"SH1106 OLED \u00B7 3 screens" },
+  "btn":      { icon:"\u{1F518}", role:"Display button \u00B7 GPIO 1" },
+  "dhcp_fb":  { icon:"\u{1F310}", role:"DHCP fallback \u00B7 8 s timeout" },
+  "heap_mon": { icon:"\u{1F4CA}", role:"Heap watchdog \u00B7 60 s interval" },
+  "wdt":      { icon:"\u{1F415}", role:"Watchdog \u00B7 EMAC restart logic" },
+  "main":     { icon:"\u{1F3E1}", role:"Init & supervision (idle)" }
+};
+
+/* ─── Helpers ─── */
+const $ = (id) => document.getElementById(id);
+const fmtKB = (b) => (b/1024).toFixed(0) + " KB";
+
+function setText(id, val) {
+  const el = $(id);
+  if (!el) return;
+  if (el.textContent !== String(val)) {
+    el.textContent = val;
+  }
+}
+
+function setClass(id, cls) {
+  const el = $(id);
+  if (el) el.className = cls;
+}
+
+function formatUptime(s) {
+  if (typeof s !== "number" || s < 0) return "\u2014";
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  if (d > 0) return d + "d " + pad(h) + "h" + pad(m) + "m";
+  return pad(h) + ":" + pad(m) + ":" + pad(sec);
+}
+
+function prioClass(p) {
+  if (p >= 7) return "prio p7";
+  if (p === 6) return "prio p6";
+  if (p === 5) return "prio p5";
+  if (p === 2) return "prio p2";
+  return "prio p1";
+}
+
+/* ─── Main render ─── */
+function render(d) {
+  /* Header status pill */
+  const pill = $("hdrStatus");
+  const stateUp = (d.servo_state || "").toUpperCase();
+  pill.className = "status-pill";
+  let pillText = "SERVO " + (stateUp || "?");
+  if (stateUp === "LOCKED") pill.className = "status-pill";
+  else if (stateUp === "HOLDOVER" || stateUp === "ACQUIRING") pill.className = "status-pill warn";
+  else pill.className = "status-pill err";
+  setText("hdrStatusText", pillText);
+
+  /* Hero — Sync state */
+  const mState = $("m_state");
+  mState.className = "metric";
+  if (stateUp === "LOCKED") mState.classList.add("locked");
+  else if (stateUp === "HOLDOVER") mState.classList.add("holdover");
+  else if (stateUp === "FAULT") mState.classList.add("fault");
+  else if (stateUp === "NO_LINK" || stateUp === "NO LINK") mState.classList.add("no-link");
+  setText("v_state", stateUp || "\u2014");
+  setText("v_state_sub", d.locked_for ? ("held " + d.locked_for) : "median window: 5");
+
+  /* Hero — Offset */
+  if (typeof d.offset_ns === "number" && (stateUp === "LOCKED" || stateUp === "HOLDOVER")) {
+    const sign = d.offset_ns >= 0 ? "+" : "";
+    $("v_offset").innerHTML = sign + d.offset_ns + ' <span class="unit">ns</span>';
+  } else {
+    setText("v_offset", "\u2014");
+  }
+
+  /* Hero — Frequency */
+  if (typeof d.freq_ppb === "number") {
+    const sign = d.freq_ppb >= 0 ? "+" : "";
+    $("v_freq").innerHTML = sign + d.freq_ppb.toFixed(1) + ' <span class="unit">ppb</span>';
+  } else {
+    setText("v_freq", "\u2014");
+  }
+
+  /* Hero — GPS */
+  setText("v_gps", d.gps_fix ? "FIX OK" : "NO FIX");
+  $("v_gps").style.color = d.gps_fix ? "var(--ok)" : "var(--err)";
+  setText("v_gps_sub", "PPS count: " + (d.pps_count != null ? d.pps_count.toLocaleString() : "\u2014"));
+
+  /* Device */
+  setText("v_chip", (d.chip || "ESP32-P4") + " rev " + (d.chip_rev || "v1.0"));
+  setText("b_dev", (d.chip || "ESP32-P4") + " \u00B7 rev " + (d.chip_rev || "v1.0"));
+  setText("v_cpufreq", (d.cpu_mhz || 0) + " MHz");
+  setText("v_proj", d.project || "\u2014");
+  setText("v_appver", "app version " + (d.app_version || "\u2014"));
+  setText("hdr_fw", "fw " + (d.app_version || "\u2014"));
+  setText("v_idf", d.idf_version || "\u2014");
+  setText("v_compile", d.compile_time || "\u2014");
+  setText("v_sha", (d.elf_sha || "").substring(0,9) + "\u2026");
+  setText("v_flash", (d.flash_mb || 16) + " MB \u00B7 " + (d.flash_mode || "DIO") + " \u00B7 " + (d.flash_mhz || 80) + " MHz");
+  setText("v_uptime", formatUptime(d.uptime_s || 0));
+
+  /* Memory */
+  setText("v_heap_free", fmtKB(d.heap_free || 0));
+  setText("v_heap_min",  fmtKB(d.heap_min  || 0));
+  setText("v_heap_lfb",  fmtKB(d.heap_lfb  || 0));
+  setText("v_retent",    (d.retent_kb || 141) + " KiB");
+  setText("v_ram",       (d.ram1_kb || 384) + " + " + (d.ram2_kb || 18) + " KiB");
+  setText("v_rtcram",    (d.rtc_kb || 31) + " KiB");
+  setText("v_tcm",       (d.tcm_kb || 7) + " KiB");
+  if (typeof d.heap_leak === "number") {
+    const lv = $("v_leak");
+    const sign = d.heap_leak >= 0 ? "+" : "";
+    setText("v_leak", sign + d.heap_leak + " B");
+    lv.className = "value " + (Math.abs(d.heap_leak) > 1024 ? "warn" : "ok");
+  }
+
+  /* Network */
+  const linkUp = !!d.link_up;
+  $("v_link").innerHTML = linkUp ? '<span class="chip ok">UP</span>' : '<span class="chip err">DOWN</span>';
+  setText("v_ip", d.ip || "(no IP)");
+  setText("v_ip_hint", d.ip_source ? d.ip_source : "DHCP/static");
+  setText("v_mac", d.mac || "\u2014");
+  $("v_l2tap").innerHTML = d.l2tap_ready ? '<span class="chip ok">READY</span>' : '<span class="chip err">NOT READY</span>';
+  setText("v_mcast", "01:1B:19:00:00:00");
+  const emacV = $("v_emac");
+  setText("v_emac", d.emac_restarts != null ? d.emac_restarts : "\u2014");
+  emacV.className = "value " + ((d.emac_restarts || 0) === 0 ? "ok" : (d.emac_restarts > 5 ? "err" : "warn"));
+  setText("v_promisc", d.promiscuous ? "enabled" : "disabled");
+  setText("v_wdt", d.wdt_healthy ? "healthy" : "alerting");
+  $("v_wdt").className = "value " + (d.wdt_healthy ? "ok" : "err");
+
+  /* PTP / timing */
+  setText("v_role", d.role || "\u2014");
+  setText("v_clockid", d.clock_id || "\u2014");
+  setText("v_utc", d.utc_time || "--:--:--");
+  setText("v_tai", "+" + (d.tai_offset != null ? d.tai_offset : "?") + " s");
+  setText("v_sync_int", (d.sync_interval_ms || 1000) + " ms");
+  setText("v_ann_int",  (d.announce_interval_ms || 2000) + " ms");
+  setText("v_seq", (d.sync_seq != null ? d.sync_seq.toLocaleString() : "?") + " \u00B7 " +
+                   (d.announce_seq != null ? d.announce_seq.toLocaleString() : "?"));
+  setText("v_path", d.path_delay_ns != null ? (d.path_delay_ns + " ns") : "\u2014 (master)");
+  setText("v_slaves", (d.slaves_active != null ? d.slaves_active : "?") + " / " +
+                      (d.slaves_max || 8));
+
+  /* Servo */
+  setText("v_servo", stateUp);
+  const sv = $("v_servo");
+  sv.className = "value " + (stateUp === "LOCKED" ? "ok" :
+                              stateUp === "HOLDOVER" ? "warn" :
+                              stateUp === "FAULT" || stateUp === "NO_LINK" ? "err" : "");
+  setText("v_integ", d.integrator != null ? d.integrator.toFixed(2) : "\u2014");
+  setText("v_lockq", (d.lock_qual != null ? d.lock_qual : "?") + " / " +
+                     (d.lock_qual_window || 64));
+  setText("v_pps", d.pps_count != null ? d.pps_count.toLocaleString() : "\u2014");
+  /* Sample rejects: lifetime total, with a live "REJ n/45" warning while a
+   * reject streak is climbing (mirrors the OLED screen-2 indicator). Green at
+   * 0, info-blue once any have occurred (self-healed), warn/err as a streak
+   * approaches the re-acquire threshold. */
+  const rv = $("v_reject");
+  if (rv) {
+    const total = (d.reject_total != null) ? d.reject_total : null;
+    const streak = (d.reject_streak != null) ? d.reject_streak : 0;
+    const reacq = d.reject_reacquire_at || 45;
+    if (total == null) {
+      setText("v_reject", "\u2014");
+      rv.className = "value dim";
+    } else if (streak > 0) {
+      setText("v_reject", "REJ " + streak + "/" + reacq + "  (" + total.toLocaleString() + " total)");
+      rv.className = "value " + (streak >= reacq * 0.5 ? "err" : "warn");
+    } else {
+      setText("v_reject", total.toLocaleString() + (total === 0 ? " (none)" : " total"));
+      rv.className = "value " + (total === 0 ? "ok" : "info");
+    }
+  }
+  setText("v_phc", d.phc_residual_ns != null ? ((d.phc_residual_ns >= 0 ? "+" : "") + d.phc_residual_ns + " ns") : "\u2014");
+  setText("v_holdto", (d.holdover_timeout_s || 5) + " s");
+  const stl = $("v_settled");
+  setText("v_settled", d.settled ? "yes" : "no");
+  stl.className = "value " + (d.settled ? "ok" : "warn");
+  setText("v_gpsage", d.gps_age_s != null ? (d.gps_age_s + " s ago") : "\u2014");
+  setText("v_ppsled", d.pps_led_active ? "blinking" : "idle");
+
+  /* Tasks */
+  if (Array.isArray(d.tasks)) {
+    const body = $("tasksBody");
+    setText("b_tasks", d.tasks.length + " active \u00B7 multicore");
+    body.innerHTML = d.tasks.map(t => {
+      const meta = TASK_META[t.name] || { icon: "\u{1F539}", role: "\u2014" };
+      const used = (t.stack_bytes && t.hwm_bytes != null)
+                 ? Math.round(100 * (1 - t.hwm_bytes / t.stack_bytes))
+                 : 0;
+      const usedBytes = (t.stack_bytes != null && t.hwm_bytes != null)
+                      ? (t.stack_bytes - t.hwm_bytes)
+                      : 0;
+      const usedDisp = usedBytes >= 1024
+                     ? (usedBytes/1024).toFixed(1) + " KB"
+                     : usedBytes + " B";
+      return ""
+        + "<tr>"
+        + '<td><span class="tname"><span class="icon">' + meta.icon + "</span>" + t.name + "</span></td>"
+        + '<td><span class="' + prioClass(t.priority) + '">' + t.priority + "</span></td>"
+        + "<td>" + (t.stack_bytes != null ? t.stack_bytes + " B" : "\u2014") + "</td>"
+        + '<td><span class="bar"><i style="width:' + used + '%"></i></span>' + usedDisp + "</td>"
+        + "<td>" + (t.core != null ? t.core : "\u2014") + "</td>"
+        + "<td>" + meta.role + "</td>"
+        + "</tr>";
+    }).join("");
+  }
+
+  /* Footer timestamp */
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  setText("lastRefresh", pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + ":" + pad(now.getUTCSeconds()) + " UTC");
+}
+
+/* ─── Polling ─── */
+async function poll() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    render(d);
+  } catch (err) {
+    const pill = $("hdrStatus");
+    pill.className = "status-pill err";
+    setText("hdrStatusText", "CONN LOST");
+    console.warn("poll failed:", err);
+  }
+}
+
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>

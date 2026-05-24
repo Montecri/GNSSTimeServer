@@ -1,0 +1,31 @@
+# Partition Table for PTP_Master with OTA support
+# ====================================================
+# Place this file as `partitions_ota.csv` in your project root (next to
+# sdkconfig). Then in menuconfig:
+#
+#   Partition Table -> Custom partition table CSV
+#   Custom partition CSV file = partitions_ota.csv
+#   (Also set "Flash size" to 16 MB if not already.)
+#
+# The two ota_0 / ota_1 slots are 3 MB each, comfortably larger than the
+# current ~600 KB firmware. The 16 MB flash on the ESP32-P4-Function-EV
+# board has 9.5 MB unused after these definitions, available for future
+# data partitions (SPIFFS, FAT, NVS-encrypted, etc.).
+#
+# ┌─────────┬───────────┬───────────┬─────────┐
+# │ Offset  │ End       │ Size      │ Use     │
+# ├─────────┼───────────┼───────────┼─────────┤
+# │ 0x009000│ 0x00EFFF  │  24 KB    │ nvs     │
+# │ 0x00F000│ 0x00FFFF  │   4 KB    │ phy_init│
+# │ 0x010000│ 0x011FFF  │   8 KB    │ otadata │
+# │ 0x020000│ 0x31FFFF  │   3 MB    │ ota_0   │
+# │ 0x320000│ 0x61FFFF  │   3 MB    │ ota_1   │
+# │ 0x620000│ 0xFFFFFF  │  ~9.5 MB  │ FREE    │
+# └─────────┴───────────┴───────────┴─────────┘
+#
+# Name,    Type, SubType, Offset,   Size,    Flags
+nvs,       data, nvs,     0x9000,   0x6000,
+phy_init,  data, phy,     0xf000,   0x1000,
+otadata,   data, ota,     0x10000,  0x2000,
+ota_0,     app,  ota_0,   0x20000,  0x300000,
+ota_1,     app,  ota_1,   0x320000, 0x300000,
