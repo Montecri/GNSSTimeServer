@@ -2,9 +2,6 @@
 
 <p align="center">
   <!-- Row 1: live repo stats -->
-<a href="https://github.com/Montecri/GNSSTimeServer/actions/workflows/release.yml">
-  <img src="https://github.com/Montecri/GNSSTimeServer/actions/workflows/release.yml/badge.svg" alt="Build" />
-</a>
   <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?cacheSeconds=3600" alt="Release" />
   <img src="https://img.shields.io/github/downloads/Montecri/GNSSTimeServer/total?cacheSeconds=3600" alt="Downloads" />
   <img src="https://img.shields.io/github/license/Montecri/GNSSTimeServer?cacheSeconds=86400" alt="License" />
