@@ -18,7 +18,7 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5.4
-          target: esp32p4
+          target: esp32
           path: 'src/PTP/Slave'
 
       - name: Collect and rename firmware binaries
@@ -48,6 +48,7 @@ jobs:
           path: artifacts/*.bin
 
       - name: Attach to release
+        if: github.event_name == 'release'
         uses: softprops/action-gh-release@v2
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
