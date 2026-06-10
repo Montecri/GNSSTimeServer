@@ -3,6 +3,7 @@ name: Firmware release (PTP Master - ESP-IDF)
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   build:
