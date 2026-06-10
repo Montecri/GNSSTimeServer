@@ -1,5 +1,26 @@
 # <p align="center">GNSS Time Servers Built From Scratch - The PPSv2 Edition</p>
 
+<p align="center">
+  <!-- Row 1: live repo stats (repo-wide — shields.io can't scope these to a subdirectory) -->
+  <img src="https://img.shields.io/github/downloads/Montecri/GNSSTimeServer/total?cacheSeconds=3600" alt="Downloads" />
+  <img src="https://img.shields.io/github/license/Montecri/GNSSTimeServer?cacheSeconds=86400" alt="License" />
+  <img src="https://img.shields.io/github/stars/Montecri/GNSSTimeServer?style=flat&cacheSeconds=3600" alt="Stars" />
+  <img src="https://img.shields.io/github/last-commit/Montecri/GNSSTimeServer/main?cacheSeconds=3600" alt="Last Commit" />
+  <img src="https://img.shields.io/github/issues/Montecri/GNSSTimeServer?cacheSeconds=3600" alt="Issues" />
+</p>
+<p align="center">
+  <!-- Row 2: what THIS subtree IS (PTP Grandmaster + Slave) -->
+  <img src="https://img.shields.io/badge/Platform-ESP32--P4-E7352C?logo=espressif&logoColor=white" alt="Platform" />
+  <img src="https://img.shields.io/badge/Framework-ESP--IDF%205.5.4-A52A2A?logo=espressif&logoColor=white" alt="ESP-IDF" />
+  <img src="https://img.shields.io/badge/C-00599C?logo=c&logoColor=white" alt="C" />
+  <img src="https://img.shields.io/badge/Protocol-PTPv2%20(IEEE%201588--2008)-blue" alt="PTPv2" />
+  <img src="https://img.shields.io/badge/Transport-Layer--2%20Ethernet-4B8BBE" alt="Layer-2 Ethernet" />
+  <img src="https://img.shields.io/badge/Timestamping-Hardware-2E8B57" alt="Hardware Timestamping" />
+  <img src="https://img.shields.io/badge/Accuracy-Sub--%C2%B5s%20(%E2%88%9274%20ns)-success" alt="Accuracy" />
+  <img src="https://img.shields.io/badge/GNSS-TAU1201%20timing%20mode-FF7F00" alt="GNSS" />
+  <a href="https://www.linkedin.com/pulse/iot-maker-tale-part-ii-from-stratum-1-ntprdate-ptpv2-monteiro-ja6ef"><img src="https://img.shields.io/badge/Featured-IoT%20Maker%20Tale%20Pt.%20II-0A66C2?logo=linkedin&logoColor=white" alt="Article" /></a>
+</p>
+
 <p align="center"><img width="643" height="299" alt="image" src="https://github.com/user-attachments/assets/41e96565-0ac0-477e-aec7-db41561343a0" /></p>
 
 Two homemade time servers, one obsession: turning a noisy one-pulse-per-second tick from the GPS satellites overhead into a clock the rest of your network can trust. They come from the same workbench and the same stubborn insistence on building from scratch — they differ only in **how precise you need to be**.
