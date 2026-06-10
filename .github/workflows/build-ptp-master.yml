@@ -22,36 +22,25 @@ jobs:
           path: 'src/PTP/Master'
           command: 'idf.py build && idf.py merge-bin -o firmware-merged.bin'
 
-      - name: Collect and rename firmware binaries
+      - name: Collect firmware binaries
         run: |
           mkdir -p artifacts
           BUILD=src/PTP/Master/build
 
-          # Single merged image (flash at 0x0 — easiest for end users)
-          if [ -f "$BUILD/firmware-merged.bin" ]; then
-            cp "$BUILD/firmware-merged.bin" \
-               "artifacts/PTP_Master-${GITHUB_REF_NAME}-merged.bin"
-          fi
+          # Merged image — for first-time flashing (offset 0x0)
+          cp "$BUILD/firmware-merged.bin" \
+             "artifacts/PTP_Master-${GITHUB_REF_NAME}-full.bin"
 
-          # Application binary (flash at 0x10000 — for OTA / app-only updates)
+          # App-only binary — for OTA updates
+          # build/ contains multiple .bin files; skip the merged image and
+          # the OTA data sector — what remains is the application binary.
           for f in "$BUILD"/*.bin; do
             [ -f "$f" ] || continue
-            name=$(basename "$f" .bin)
-            # Skip the merged image (already copied above with a clearer name)
-            [ "$name" = "firmware-merged" ] && continue
-            cp "$f" "artifacts/PTP_Master-${GITHUB_REF_NAME}-app.bin"
+            case "$(basename "$f")" in
+              firmware-merged.bin|ota_data_initial.bin) continue ;;
+            esac
+            cp "$f" "artifacts/PTP_Master-${GITHUB_REF_NAME}-ota.bin"
           done
-
-          # Bootloader (flash at 0x1000) and partition table (flash at 0x8000)
-          [ -f "$BUILD/bootloader/bootloader.bin" ] && \
-            cp "$BUILD/bootloader/bootloader.bin" \
-               "artifacts/PTP_Master-${GITHUB_REF_NAME}-bootloader.bin"
-          [ -f "$BUILD/partition_table/partition-table.bin" ] && \
-            cp "$BUILD/partition_table/partition-table.bin" \
-               "artifacts/PTP_Master-${GITHUB_REF_NAME}-partition-table.bin"
-          [ -f "$BUILD/ota_data_initial.bin" ] && \
-            cp "$BUILD/ota_data_initial.bin" \
-               "artifacts/PTP_Master-${GITHUB_REF_NAME}-ota-data.bin"
 
           ls -la artifacts/
 
