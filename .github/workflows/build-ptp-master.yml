@@ -17,7 +17,7 @@ jobs:
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5.4
-          target: esp32
+          target: esp32p4
           path: 'src/PTP/Master'
 
       - name: Collect and rename firmware binaries
