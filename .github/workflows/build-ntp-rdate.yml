@@ -7,6 +7,7 @@ on:
 
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'ntp-rdate-v')
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -42,19 +43,27 @@ jobs:
           pip install --upgrade platformio
 
       - name: Extract build version
-        id: get_version
-        uses: battila7/get-version-action@v2
+        id: ver
+        run: |
+          # Strip 'ntp-rdate-' prefix from tag (e.g. 'ntp-rdate-v1.0.5' -> 'v1.0.5')
+          # For manual dispatch, this is the branch name (e.g. 'main')
+          VERSION="${GITHUB_REF_NAME#ntp-rdate-}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "version_no_v=${VERSION#v}" >> $GITHUB_OUTPUT
+          echo "Building with version: $VERSION"
 
       - name: Run PlatformIO
         env:
-          VERSION: ${{ steps.get_version.outputs.version-without-v }}
+          VERSION: ${{ steps.ver.outputs.version_no_v }}
         run: pio run
 
       - name: Rename firmware binaries
+        env:
+          V: ${{ steps.ver.outputs.version }}
         run: |
-          mv .pio/build/ESP32Duino/firmware.bin .pio/build/ESP32Duino/firmware-ESP32Duino-$GITHUB_REF_NAME.bin
-          mv .pio/build/Amica/firmware.bin .pio/build/Amica/firmware-Amica-$GITHUB_REF_NAME.bin
-          mv .pio/build/ESP32Duino_Ethernet/firmware.bin .pio/build/ESP32Duino_Ethernet/firmware-ESP32Duino_Ethernet-$GITHUB_REF_NAME.bin
+          mv .pio/build/ESP32Duino/firmware.bin .pio/build/ESP32Duino/firmware-ESP32Duino-$V.bin
+          mv .pio/build/Amica/firmware.bin .pio/build/Amica/firmware-Amica-$V.bin
+          mv .pio/build/ESP32Duino_Ethernet/firmware.bin .pio/build/ESP32Duino_Ethernet/firmware-ESP32Duino_Ethernet-$V.bin
 
       - name: Archive production artifacts
         uses: actions/upload-artifact@v4

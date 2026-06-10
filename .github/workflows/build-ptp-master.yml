@@ -7,12 +7,22 @@ on:
 
 jobs:
   build:
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.event.release.tag_name, 'ptp-master-v')
     runs-on: ubuntu-latest
 
     steps:
       - uses: actions/checkout@v4
         with:
           submodules: recursive
+
+      - name: Extract build version
+        id: ver
+        run: |
+          # Strip 'ptp-master-' prefix from tag (e.g. 'ptp-master-v1.0.5' -> 'v1.0.5')
+          # For manual dispatch, this is the branch name (e.g. 'main')
+          VERSION="${GITHUB_REF_NAME#ptp-master-}"
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "Building with version: $VERSION"
 
       - name: ESP-IDF build + merge
         uses: espressif/esp-idf-ci-action@v1
@@ -23,23 +33,23 @@ jobs:
           command: 'idf.py build && idf.py merge-bin -o firmware-merged.bin'
 
       - name: Collect firmware binaries
+        env:
+          V: ${{ steps.ver.outputs.version }}
         run: |
           mkdir -p artifacts
           BUILD=src/PTP/Master/build
 
           # Merged image — for first-time flashing (offset 0x0)
           cp "$BUILD/firmware-merged.bin" \
-             "artifacts/PTP_Master-${GITHUB_REF_NAME}-full.bin"
+             "artifacts/PTP_Master-$V-full.bin"
 
           # App-only binary — for OTA updates
-          # build/ contains multiple .bin files; skip the merged image and
-          # the OTA data sector — what remains is the application binary.
           for f in "$BUILD"/*.bin; do
             [ -f "$f" ] || continue
             case "$(basename "$f")" in
               firmware-merged.bin|ota_data_initial.bin) continue ;;
             esac
-            cp "$f" "artifacts/PTP_Master-${GITHUB_REF_NAME}-ota.bin"
+            cp "$f" "artifacts/PTP_Master-$V-ota.bin"
           done
 
           ls -la artifacts/
