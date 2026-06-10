@@ -3,6 +3,7 @@ name: Firmware release (PTP Slave - ESP-IDF)
 on:
   release:
     types: [published]
+  workflow_dispatch:
 
 jobs:
   build:
