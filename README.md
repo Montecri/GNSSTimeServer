@@ -1,11 +1,26 @@
 # <p align="center">Stratum-1 GNSS Time Server Built From Scratch-GNSSTimeServer</p>
 
 <p align="center">
-<img src="https://img.shields.io/github/actions/workflow/status/Montecri/GNSSTimeServer/.github%2Fworkflows%2Fmain.yml" alt="GitHub Actions Workflow Status" />
-<img src="https://img.shields.io/github/languages/count/Montecri/GNSSTimeServer" alt="GitHub language count" />
-<img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer" alt="GitHub Release" />
-<img src="https://img.shields.io/github/commit-activity/t/Montecri/GNSSTimeServer" alt="GitHub commit activity" />
-<img src="https://img.shields.io/github/issues/Montecri/GNSSTimeServer" alt="GitHub Issues or Pull Requests" />
+  <!-- Row 1: live repo stats -->
+<a href="https://github.com/Montecri/GNSSTimeServer/actions/workflows/release.yml">
+  <img src="https://github.com/Montecri/GNSSTimeServer/actions/workflows/release.yml/badge.svg" alt="Build" />
+</a>
+  <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?cacheSeconds=3600" alt="Release" />
+  <img src="https://img.shields.io/github/downloads/Montecri/GNSSTimeServer/total?cacheSeconds=3600" alt="Downloads" />
+  <img src="https://img.shields.io/github/license/Montecri/GNSSTimeServer?cacheSeconds=86400" alt="License" />
+  <img src="https://img.shields.io/github/stars/Montecri/GNSSTimeServer?style=flat&cacheSeconds=3600" alt="Stars" />
+  <img src="https://img.shields.io/github/last-commit/Montecri/GNSSTimeServer/main?cacheSeconds=3600" alt="Last Commit" />
+  <img src="https://img.shields.io/github/issues/Montecri/GNSSTimeServer?cacheSeconds=3600" alt="Issues" />
+</p>
+<p align="center">
+  <!-- Row 2: what the project IS -->
+  <img src="https://img.shields.io/badge/Platform-ESP32%20%7C%20ESP8266-E7352C?logo=espressif&logoColor=white" alt="Platform" />
+  <img src="https://img.shields.io/badge/Framework-Arduino-00979D?logo=arduino&logoColor=white" alt="Arduino" />
+  <img src="https://img.shields.io/badge/ESP--IDF-A52A2A?logo=espressif&logoColor=white" alt="ESP-IDF" />
+  <img src="https://img.shields.io/badge/PlatformIO-FF7F00?logo=platformio&logoColor=white" alt="PlatformIO" />
+  <img src="https://img.shields.io/badge/C%2B%2B-00599C?logo=cplusplus&logoColor=white" alt="C++" />
+  <img src="https://img.shields.io/badge/Protocols-NTP%20%7C%20PTP%20%7C%20RFC868-blue" alt="Protocols" />
+  <a href="https://hackaday.com/2021/07/25/portable-gps-time-server-powered-by-the-esp8266/"><img src="https://img.shields.io/badge/Featured-Hackaday-yellow?logo=hackaday&logoColor=black" alt="Hackaday" /></a>
 </p>
 
 <p align="center"><a href="https://github.com/Montecri/GNSSTimeServer/tree/main/src/PTP/README.md" target="_blank">
