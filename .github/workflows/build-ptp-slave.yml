@@ -14,31 +14,45 @@ jobs:
         with:
           submodules: recursive
 
-      - name: ESP-IDF build
+      - name: ESP-IDF build + merge
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.5.4
           target: esp32
           path: 'src/PTP/Slave'
+          command: 'idf.py build && idf.py merge-bin -o firmware-merged.bin'
 
       - name: Collect and rename firmware binaries
         run: |
           mkdir -p artifacts
-          # Main application binary (project name comes from CMakeLists.txt)
-          for f in src/PTP/Slave/build/*.bin; do
+          BUILD=src/PTP/Slave/build
+
+          # Single merged image (flash at 0x0 — easiest for end users)
+          if [ -f "$BUILD/firmware-merged.bin" ]; then
+            cp "$BUILD/firmware-merged.bin" \
+               "artifacts/PTP_Slave-${GITHUB_REF_NAME}-merged.bin"
+          fi
+
+          # Application binary (flash at 0x10000 — for OTA / app-only updates)
+          for f in "$BUILD"/*.bin; do
             [ -f "$f" ] || continue
-            base=$(basename "$f" .bin)
-            cp "$f" "artifacts/${base}-PTP_Slave-${GITHUB_REF_NAME}.bin"
+            name=$(basename "$f" .bin)
+            # Skip the merged image (already copied above with a clearer name)
+            [ "$name" = "firmware-merged" ] && continue
+            cp "$f" "artifacts/PTP_Slave-${GITHUB_REF_NAME}-app.bin"
           done
-          # Also include bootloader and partition table for full flashing
-          if [ -f src/PTP/Slave/build/bootloader/bootloader.bin ]; then
-            cp src/PTP/Slave/build/bootloader/bootloader.bin \
-               "artifacts/bootloader-PTP_Slave-${GITHUB_REF_NAME}.bin"
-          fi
-          if [ -f src/PTP/Slave/build/partition_table/partition-table.bin ]; then
-            cp src/PTP/Slave/build/partition_table/partition-table.bin \
-               "artifacts/partition-table-PTP_Slave-${GITHUB_REF_NAME}.bin"
-          fi
+
+          # Bootloader (flash at 0x1000) and partition table (flash at 0x8000)
+          [ -f "$BUILD/bootloader/bootloader.bin" ] && \
+            cp "$BUILD/bootloader/bootloader.bin" \
+               "artifacts/PTP_Slave-${GITHUB_REF_NAME}-bootloader.bin"
+          [ -f "$BUILD/partition_table/partition-table.bin" ] && \
+            cp "$BUILD/partition_table/partition-table.bin" \
+               "artifacts/PTP_Slave-${GITHUB_REF_NAME}-partition-table.bin"
+          [ -f "$BUILD/ota_data_initial.bin" ] && \
+            cp "$BUILD/ota_data_initial.bin" \
+               "artifacts/PTP_Slave-${GITHUB_REF_NAME}-ota-data.bin"
+
           ls -la artifacts/
 
       - name: Archive production artifacts
