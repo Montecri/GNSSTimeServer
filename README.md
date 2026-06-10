@@ -24,13 +24,13 @@
 
 <p align="center">
   <a href="https://github.com/Montecri/GNSSTimeServer/releases?q=ntp-rdate-">
-    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ntp-rdate-*&label=NTP%2FRDATE&color=00979D&cacheSeconds=3600" alt="NTP/RDATE release" />
+    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ntp-rdate-*&label=NTP%2FRDATE&color=00979D&cacheSeconds=300" alt="NTP/RDATE release" />
   </a>
   <a href="https://github.com/Montecri/GNSSTimeServer/releases?q=ptp-master-">
-    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ptp-master-*&label=PTP%20Master&color=A52A2A&cacheSeconds=3600" alt="PTP Master release" />
+    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ptp-master-*&label=PTP%20Master&color=A52A2A&cacheSeconds=300" alt="PTP Master release" />
   </a>
   <a href="https://github.com/Montecri/GNSSTimeServer/releases?q=ptp-slave-">
-    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ptp-slave-*&label=PTP%20Slave&color=A52A2A&cacheSeconds=3600" alt="PTP Slave release" />
+    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ptp-slave-*&label=PTP%20Slave&color=A52A2A&cacheSeconds=300" alt="PTP Slave release" />
   </a>
 </p>
   
