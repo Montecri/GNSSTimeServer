@@ -21,6 +21,19 @@
   <img src="https://img.shields.io/badge/C%2B%2B-00599C?logo=cplusplus&logoColor=white" alt="C++" />
   <img src="https://img.shields.io/badge/Protocols-NTP%20%7C%20PTP%20%7C%20RFC868-blue" alt="Protocols" />
   <a href="https://hackaday.com/2021/07/25/portable-gps-time-server-powered-by-the-esp8266/"><img src="https://img.shields.io/badge/Featured-Hackaday-yellow?logo=hackaday&logoColor=black" alt="Hackaday" /></a>
+
+<p align="center">
+  <a href="https://github.com/Montecri/GNSSTimeServer/releases?q=ntp-rdate-">
+    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ntp-rdate-*&label=NTP%2FRDATE&color=00979D&cacheSeconds=3600" alt="NTP/RDATE release" />
+  </a>
+  <a href="https://github.com/Montecri/GNSSTimeServer/releases?q=ptp-master-">
+    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ptp-master-*&label=PTP%20Master&color=A52A2A&cacheSeconds=3600" alt="PTP Master release" />
+  </a>
+  <a href="https://github.com/Montecri/GNSSTimeServer/releases?q=ptp-slave-">
+    <img src="https://img.shields.io/github/v/release/Montecri/GNSSTimeServer?filter=ptp-slave-*&label=PTP%20Slave&color=A52A2A&cacheSeconds=3600" alt="PTP Slave release" />
+  </a>
+</p>
+  
 </p>
 
 <p align="center"><a href="https://github.com/Montecri/GNSSTimeServer/tree/main/src/PTP/README.md" target="_blank">
