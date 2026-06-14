@@ -1,4 +1,4 @@
-# <p align="center">GNSS Time Servers Built From Scratch - The PPSv2 Edition</p>
+# <p align="center">GNSS Time Servers Built From Scratch - The PTPv2 Edition</p>
 
 <p align="center">
   <!-- Row 1: live repo stats (repo-wide — shields.io can't scope these to a subdirectory) -->
@@ -145,7 +145,7 @@ This is the maker-friendly heart both devices share: you can read their health a
 - **Mains-powered:** Hi-Link 5V/3W · Mini-360 DC-DC buck · TP4056 module · 18650 holder · 0.5 A/230 V fuse · 10D561K varistor
 - **Adapter-powered:** 18650 battery shield · 5.5 × 2.1 mm (or suitable) socket
 - **Ethernet version:** WIZnet W5500 module
-- Resistors (150, 100, 150 Ω for the LEDs) · and momentary push button
+- Resistors (150, 100, 150 Ω for the LEDs) · and a momentary push button
 
 ### 📡 PTP Grandmaster
 
@@ -155,8 +155,8 @@ This is the maker-friendly heart both devices share: you can read their health a
 - 1.3″ SH1106 OLED (128×64, I²C, address `0x78`)
 - Momentary push button · 5 mm LEDs (lock + PPS) with current-limiting resistors
 - Active GPS antenna with clear sky view
-- RJ45 cable (Cat 5e+ — for back-to-back testing - No crossover needed for connectiong two JC-ESP32P4-M3-DEV since they are MDI/MDIX)
-- 5 V supply (USB-C or barrel jack, board-dependent)
+- RJ45 cable (Cat 5e+ — for back-to-back testing - No crossover needed for connecting two JC-ESP32P4-M3-DEV since they are MDI/MDIX)
+- 5 V supply (USB-C)
 
 > [!TIP]
 > The **TAU1201 is the single highest-impact part choice** in either build, and the make-or-break one for the PTP grandmaster. A navigation-grade receiver works — the firmware accepts NMEA from any of them — but PPS jitter will be hundreds of nanoseconds rather than ~10 ns, and the achievable accuracy scales with it. If the budget allows, fit the TAU1201.
@@ -181,8 +181,6 @@ Libraries:
   arcao/Syslog        @ ^2.0.0
 ```
 
-Wiring diagrams (ESP8266, ESP32, ESP32-with-Ethernet) and the power-supply diagram are below.
-
 **📡 PTP Grandmaster — ESP-IDF 5.5.4**
 
 ```
@@ -198,7 +196,7 @@ Libraries:
 
 ## 🧪 Measuring sub-microsecond honestly (📡 PTP)
 
-A grandmaster's accuracy claim is only as good as the instrument measuring it. A software-timestamping slave on a generic PC would drown sub-microsecond behaviour in its own kernel jitter — so the measurement instrument has to be at least as good as the device under test. The project therefore includes a **companion slave unit on identical ESP32-P4 hardware**, with its own hardware-timestamped state machine, servo, OLED, button, LEDs, and web dashboard reporting offset, path delay, and lock quality.
+A grandmaster's accuracy claim is only as good as the instrument measuring it. A software-timestamping slave on a generic PC would drown sub-microsecond behaviour in its own kernel jitter — so the measurement instrument has to be at least as good as the device under test. The project, therefore, includes a **companion slave unit on identical ESP32-P4 hardware**, with its own hardware-timestamped state machine, servo, OLED, button, LEDs, and web dashboard reporting offset, path delay, and lock quality.
 
 ```
    ┌──────────────────┐                    ┌──────────────────┐
@@ -227,7 +225,7 @@ Captured by that slave, on a typical evening with the antenna on the balcony:
 For context, commercial PTP grandmasters delivering similar numbers typically start north of **US$2,000**. The bill of materials here — for *both* master and slave — is closer to a nice dinner.
 
 > [!NOTE]
-> **What's next:** a **PTP-capable switch** (transparent- or boundary-clock function preferred) to run multiple slaves against the master at once, and a third unit configured as a boundary clock. Switched-network testing is where the interesting questions surface — master load scaling, BMCA failover under real witnesses, switch-induced residence delay.
+> **What's next:** a **PTP-capable switch** (transparent- or boundary-clock function preferred) to run multiple slaves against the master at once, and a third unit configured as a boundary clock. Switched-network testing is where the interesting questions surface — master load scaling, BMCA failover under real witnesses, switch-induced residence delay. Yes, I understand commercial units come with high-quality OCXO parts, rubidium oscillators, certifications, etc, but still...
 
 ---
 
@@ -250,9 +248,9 @@ For context, commercial PTP grandmasters delivering similar numbers typically st
 
 ## 🤖 A note on AI tooling
 
-The first build, three years ago, was stitched together by hand from two PDFs and an Arduino-forum thread. The second would not have reached this caliber, in the time one person had, without the generation of AI tools available in 2026. Yes, the code is heavilly built by AI. Don't like it? Go there and fix!
+The first build, three years ago, was stitched together by hand from two PDFs and an Arduino-forum thread. The second would not have reached this caliber, in the time one person had, without the generation of AI tools available in 2026. Yes, the code is heavily built by AI. Don't like it? Go there and fix!
 
-The PID tuning still had to be measured against reality. The interrupt path still had to be debugged on real hardware. The architectural decisions are still mine to defend. But AI compressed weeks of reading-and-experimenting into hours and let a single maker take on the scope of *two* firmware codebases — grandmaster and slave — in one project cycle. For anyone hesitating to start something that feels too large: the tools have changed, and the barrier is lower than you think.
+The PID tuning still had to be measured against reality. The interrupt path still had to be debugged on real hardware. The architectural decisions are still mine to defend. But AI compressed weeks of reading and experimenting into hours and let a single maker take on the scope of *two* firmware codebases — grandmaster and slave — in one project cycle. For anyone hesitating to start something that feels too large: the tools have changed, and the barrier is lower than you think.
 
 ---
 
