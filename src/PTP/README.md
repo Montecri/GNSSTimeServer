@@ -271,9 +271,6 @@ The NTP/RDATE server stands on the shoulders of [w8bh.net](http://w8bh.net/avr/c
 
 ---
 
-## 📜 License
-
-MIT License — see [LICENSE](LICENSE) for details.
 
 [!["Buy Me A Coffee"](https://www.buymeacoffee.com/assets/img/custom_images/orange_img.png)](https://www.buymeacoffee.com/cristmon)
 
