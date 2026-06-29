@@ -37,7 +37,7 @@
 
 /* Survey duration in seconds. The configurator caps the survey at this
  * many seconds; main.c reads this for OLED display purposes. */
-#define ALLYSTAR_SURVEY_MAX_SECONDS  (5 * 60)
+#define ALLYSTAR_SURVEY_MAX_SECONDS  (15 * 60)
 
 #ifdef __cplusplus
 extern "C" {

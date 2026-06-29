@@ -435,6 +435,156 @@ static esp_err_t status_handler(httpd_req_t *req)
 }
 
 /* ----------------------------------------------------------------------------
+ *  GET /api/health  --  lightweight JSON for load / soak monitoring
+ *
+ *  Surfaces the four things a flood or multi-hour soak needs to watch:
+ *    - heap: free / minimum-ever-free / largest-free-block (catches the
+ *      "no mem for receive buffer" RX-descriptor exhaustion drift)
+ *    - sync_jitter: spacing of consecutive Sync HW TX timestamps, in µs
+ *      (widening/scattering = ptp_tx_task starved under Delay_Req load)
+ *    - per-task cpu_pct: INSTANTANEOUS share of CPU since the previous poll
+ *      (watch ptp_rx climb), plus stack_hwm per task
+ *    - rx_task: a convenience block pulling ptp_rx's stack_hwm + cpu_pct out
+ *
+ *  Kept separate from /api/status so it stays cheap to poll at 1 Hz and never
+ *  perturbs the status page. cpu_pct requires CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS
+ *  (and CONFIG_FREERTOS_USE_TRACE_FACILITY, already on); if stats are off,
+ *  "runtime_stats":false and every cpu_pct is null — all other fields still work.
+ * --------------------------------------------------------------------------- */
+#if (configGENERATE_RUN_TIME_STATS == 1)
+/* Previous per-task run-time counters, so we report instantaneous CPU% (share
+ * of CPU time since the last poll) rather than a lifetime average that barely
+ * moves. Keyed by task handle; stale entries from exited tasks are harmless.
+ * The 32-bit counters wrap (~tens of minutes), but unsigned subtraction yields
+ * the correct delta across a single wrap, which 1 Hz polling never exceeds. */
+typedef struct { TaskHandle_t h; uint32_t prev_run; } web_cpu_prev_t;
+static web_cpu_prev_t s_cpu_prev[48];
+static uint32_t s_cpu_prev_n = 0;
+static uint32_t s_cpu_prev_total = 0;
+
+static uint32_t *web_cpu_slot(TaskHandle_t h)
+{
+    for (uint32_t i = 0; i < s_cpu_prev_n; i++)
+        if (s_cpu_prev[i].h == h) return &s_cpu_prev[i].prev_run;
+    if (s_cpu_prev_n < (sizeof(s_cpu_prev) / sizeof(s_cpu_prev[0])))
+    {
+        s_cpu_prev[s_cpu_prev_n].h = h;
+        s_cpu_prev[s_cpu_prev_n].prev_run = 0;
+        return &s_cpu_prev[s_cpu_prev_n++].prev_run;
+    }
+    return NULL;
+}
+#endif
+
+static esp_err_t health_handler(httpd_req_t *req)
+{
+    int64_t now_ms   = esp_timer_get_time() / 1000;
+    int64_t uptime_s = (now_ms - g_boot_time_ms) / 1000;
+
+    size_t heap_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    size_t heap_min  = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
+    size_t heap_lfb  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    /* Sync-interval jitter (µs), measured in main.c at the Sync TX path. */
+    int64_t sj_min, sj_max, sj_mean, sj_last;
+    uint32_t sj_win;
+    uint32_t sj_count = ptp_sync_jitter_stats(&sj_min, &sj_max, &sj_mean, &sj_last, &sj_win);
+
+    /* FreeRTOS task table (+ total run time for CPU%). */
+    UBaseType_t n_tasks = uxTaskGetNumberOfTasks();
+    if (n_tasks > 40) n_tasks = 40;
+    TaskStatus_t *tarr = (TaskStatus_t *)calloc(n_tasks, sizeof(TaskStatus_t));
+    UBaseType_t got = 0;
+    uint32_t total_run = 0;
+    if (tarr)
+        got = uxTaskGetSystemState(tarr, n_tasks, &total_run);
+
+#if (configGENERATE_RUN_TIME_STATS == 1)
+    uint32_t dtotal = total_run - s_cpu_prev_total;       /* unsigned: wrap-safe */
+    bool have_cpu = (s_cpu_prev_total != 0) && (dtotal != 0);
+#else
+    bool have_cpu = false;
+    (void)total_run;
+#endif
+
+    const size_t BUF_SZ = 6144;
+    char *buf = (char *)malloc(BUF_SZ);
+    if (!buf)
+    {
+        free(tarr);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    size_t off = 0;
+
+    uint32_t rx_hwm = 0;
+    double   rx_cpu = -1.0;
+
+    off += snprintf(buf + off, BUF_SZ - off,
+        "{"
+        "\"uptime_s\":%lld,"
+        "\"runtime_stats\":%s,"
+        "\"heap\":{\"free\":%u,\"min\":%u,\"lfb\":%u},"
+        "\"sync_jitter\":{\"nominal_us\":1000000,\"window\":%" PRIu32 ",\"count\":%" PRIu32 ","
+            "\"last_us\":%lld,\"min_us\":%lld,\"max_us\":%lld,\"mean_us\":%lld,\"p2p_us\":%lld},"
+        "\"tasks\":[",
+        (long long)uptime_s,
+        have_cpu ? "true" : "false",
+        (unsigned)heap_free, (unsigned)heap_min, (unsigned)heap_lfb,
+        sj_win, sj_count,
+        (long long)sj_last, (long long)sj_min, (long long)sj_max, (long long)sj_mean,
+        (long long)(sj_win ? (sj_max - sj_min) : 0));
+
+    bool first = true;
+    for (UBaseType_t i = 0; i < got && off < BUF_SZ - 160; i++)
+    {
+        const TaskStatus_t *t = &tarr[i];
+        const char *name = t->pcTaskName ? t->pcTaskName : "?";
+        uint32_t hwm_bytes = (uint32_t)t->usStackHighWaterMark * sizeof(StackType_t);
+
+        double cpu = -1.0;
+#if (configGENERATE_RUN_TIME_STATS == 1)
+        uint32_t *prev = web_cpu_slot(t->xHandle);
+        if (prev)
+        {
+            uint32_t drun = (uint32_t)t->ulRunTimeCounter - *prev; /* wrap-safe */
+            if (have_cpu) cpu = (100.0 * (double)drun) / (double)dtotal;
+            *prev = (uint32_t)t->ulRunTimeCounter;
+        }
+#endif
+        if (!strcmp(name, "ptp_rx")) { rx_hwm = hwm_bytes; rx_cpu = cpu; }
+
+        if (cpu < 0.0)
+            off += snprintf(buf + off, BUF_SZ - off,
+                "%s{\"name\":\"%s\",\"prio\":%u,\"stack_hwm\":%" PRIu32 ",\"cpu_pct\":null}",
+                first ? "" : ",", name, (unsigned)t->uxCurrentPriority, hwm_bytes);
+        else
+            off += snprintf(buf + off, BUF_SZ - off,
+                "%s{\"name\":\"%s\",\"prio\":%u,\"stack_hwm\":%" PRIu32 ",\"cpu_pct\":%.1f}",
+                first ? "" : ",", name, (unsigned)t->uxCurrentPriority, hwm_bytes, cpu);
+        first = false;
+    }
+
+#if (configGENERATE_RUN_TIME_STATS == 1)
+    s_cpu_prev_total = total_run;
+#endif
+
+    off += snprintf(buf + off, BUF_SZ - off,
+        "],\"rx_task\":{\"stack_size\":8192,\"stack_hwm\":%" PRIu32 ",", rx_hwm);
+    if (rx_cpu < 0.0)
+        off += snprintf(buf + off, BUF_SZ - off, "\"cpu_pct\":null}}");
+    else
+        off += snprintf(buf + off, BUF_SZ - off, "\"cpu_pct\":%.1f}}", rx_cpu);
+
+    free(tarr);
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
+    esp_err_t r = httpd_resp_send(req, buf, off);
+    free(buf);
+    return r;
+}
+
+/* ----------------------------------------------------------------------------
  *  GET /ota  --  serves the embedded OTA upload page
  * --------------------------------------------------------------------------- */
 static esp_err_t ota_page_handler(httpd_req_t *req)
@@ -492,6 +642,12 @@ static httpd_handle_t web_server_start(void)
         .handler  = status_handler,
         .user_ctx = NULL,
     };
+    static const httpd_uri_t uri_health = {
+        .uri      = "/api/health",
+        .method   = HTTP_GET,
+        .handler  = health_handler,
+        .user_ctx = NULL,
+    };
     static const httpd_uri_t uri_ota_page = {
         .uri      = "/ota",
         .method   = HTTP_GET,
@@ -513,6 +669,7 @@ static httpd_handle_t web_server_start(void)
 
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_status);
+    httpd_register_uri_handler(server, &uri_health);
     httpd_register_uri_handler(server, &uri_ota_page);
     httpd_register_uri_handler(server, &uri_ota_info);
     httpd_register_uri_handler(server, &uri_ota_upload);
@@ -520,6 +677,7 @@ static httpd_handle_t web_server_start(void)
     ESP_LOGI(WEB_TAG, "HTTP server ready -- open http://<device-ip>/ in a browser");
     ESP_LOGI(WEB_TAG, "  GET  /            -> status page");
     ESP_LOGI(WEB_TAG, "  GET  /api/status  -> status JSON");
+    ESP_LOGI(WEB_TAG, "  GET  /api/health  -> load/soak health JSON (heap/cpu/stack/jitter)");
     ESP_LOGI(WEB_TAG, "  GET  /ota         -> OTA upload page");
     ESP_LOGI(WEB_TAG, "  GET  /api/ota/info-> OTA partition info JSON");
     ESP_LOGI(WEB_TAG, "  POST /api/ota     -> firmware image upload");

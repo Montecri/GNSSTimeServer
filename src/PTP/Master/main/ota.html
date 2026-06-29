@@ -79,8 +79,46 @@
   .row .value.warn  { color:var(--warn); }
   .row .value.accent{ color:var(--accent); }
 
+  /* Auth inputs (Basic Auth for POST /api/ota) */
+  .auth-row {
+    display:flex;
+    gap:10px;
+    margin-bottom:18px;
+    flex-wrap:wrap;
+  }
+  .auth-row label {
+    flex:1;
+    min-width:140px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .auth-row .auth-label {
+    font-family:var(--mono);
+    font-size:10px;
+    color:var(--text-dim);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+  }
+  .auth-row input {
+    padding:10px 12px;
+    background:var(--bg-2);
+    color:var(--text);
+    border:1px solid var(--line);
+    border-radius:8px;
+    font-family:var(--mono);
+    font-size:13px;
+    transition:all 0.2s ease;
+  }
+  .auth-row input:focus {
+    outline:none;
+    border-color:var(--accent);
+    box-shadow:0 0 0 3px rgba(78,201,176,0.1);
+  }
+
   /* File picker */
   .drop-zone {
+    display:block;
     border:2px dashed var(--line);
     border-radius:12px;
     padding:36px 24px;
@@ -277,6 +315,20 @@
       <span class="badge">.bin file from <code>idf.py build</code></span>
     </div>
 
+    <!-- Basic Auth credentials. These are sent as Authorization: Basic <base64>
+         on the upload POST. Must match the user:password whose Base64 is
+         compiled into OTA_BASIC_AUTH_B64 (ota_credentials.h on the device). -->
+    <div class="auth-row">
+      <label>
+        <span class="auth-label">Username</span>
+        <input id="otaUser" type="text" autocomplete="username" value="admin">
+      </label>
+      <label>
+        <span class="auth-label">Password</span>
+        <input id="otaPass" type="password" autocomplete="current-password" placeholder="set in ota_credentials.h">
+      </label>
+    </div>
+
     <label class="drop-zone" id="dropZone" for="fileInput">
       <span class="icon-big">&#x1F4E5;</span>
       <div class="primary" id="dropPrimary">Click to choose firmware or drop here</div>
@@ -443,6 +495,13 @@ function showAlert(type, title, body) {
 
 function clearAlert() { $("alertSlot").innerHTML = ""; }
 
+/* ─── Re-enable controls after a failed/aborted upload ─── */
+function unlockControls() {
+  $("uploadBtn").disabled = false;
+  $("clearBtn").disabled  = false;
+  fi.disabled = false;
+}
+
 /* ─── Upload ─── */
 $("uploadBtn").addEventListener("click", () => {
   if (!selectedFile) return;
@@ -454,6 +513,19 @@ function startUpload(file) {
   $("uploadBtn").disabled = true;
   $("clearBtn").disabled  = true;
   fi.disabled = true;
+
+  /* Read credentials FIRST. If the user left them blank we bail before
+   * disturbing the progress UI — the device requires Basic Auth on
+   * POST /api/ota and would just return 401 anyway. */
+  const user = ($("otaUser").value || "").trim();
+  const pass = $("otaPass").value || "";
+  if (!user) {
+    showAlert("err", "Username required",
+      "Enter the username that matches the credential compiled into "
+      + "<code>OTA_BASIC_AUTH_B64</code> (see <code>ota_credentials.h</code>).");
+    unlockControls();
+    return;
+  }
 
   const pw = $("progressWrap");
   pw.classList.add("visible");
@@ -492,17 +564,39 @@ function startUpload(file) {
       $("progPct").textContent = "100%";
       $("progBar").style.width = "100%";
       showAlert("ok", "Upload complete \u2014 device rebooting",
-        "The device will reboot into the new image in ~1 second. " +
-        "After reboot, refresh this page to verify the new version.");
-      // Poll for the device to come back
+        "The device will reboot into the new image in ~1 second. "
+        + "After reboot, refresh this page to verify the new version.");
       setTimeout(waitForReboot, 3000);
+    } else if (xhr.status === 401) {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "Authentication rejected (HTTP 401)",
+        "Check the username and password. The device expects the credentials "
+        + "whose Base64 is compiled into <code>OTA_BASIC_AUTH_B64</code> "
+        + "in <code>ota_credentials.h</code>.");
+      unlockControls();
+    } else if (xhr.status === 503) {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "OTA disabled on device (HTTP 503)",
+        "<code>OTA_BASIC_AUTH_B64</code> is still set to the sentinel "
+        + "(<code>REPLACE_ME</code>). Set a real credential, rebuild, and "
+        + "flash once over UART to enable network OTA.");
+      unlockControls();
+    } else if (xhr.status === 409) {
+      $("progStage").textContent = "FAILED";
+      showAlert("warn", "OTA already in progress (HTTP 409)",
+        "Another upload is currently running. Wait for it to finish, then retry.");
+      unlockControls();
+    } else if (xhr.status === 400) {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "Upload rejected (HTTP 400)",
+        xhr.responseText || "Image was rejected. Wrong chip target, truncated, "
+        + "or wrong Content-Type.");
+      unlockControls();
     } else {
       $("progStage").textContent = "FAILED";
       showAlert("err", "Upload rejected (HTTP " + xhr.status + ")",
         xhr.responseText || "Unknown error");
-      $("uploadBtn").disabled = false;
-      $("clearBtn").disabled  = false;
-      fi.disabled = false;
+      unlockControls();
     }
   });
 
@@ -510,21 +604,22 @@ function startUpload(file) {
     $("progStage").textContent = "ERROR";
     showAlert("err", "Network error during upload",
       "The connection was lost. Check the device and try again.");
-    $("uploadBtn").disabled = false;
-    $("clearBtn").disabled  = false;
-    fi.disabled = false;
+    unlockControls();
   });
 
   xhr.addEventListener("abort", () => {
     $("progStage").textContent = "ABORTED";
     showAlert("warn", "Upload cancelled", "No changes were made.");
-    $("uploadBtn").disabled = false;
-    $("clearBtn").disabled  = false;
-    fi.disabled = false;
+    unlockControls();
   });
 
+  /* IMPORTANT: set the Authorization header BEFORE xhr.send(file). The
+   * browser will not prompt for credentials in response to a 401 on an XHR
+   * POST that already carries a body — the body has been consumed and can't
+   * be replayed. Credentials must be on the first attempt or never. */
   xhr.open("POST", "/api/ota");
   xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.setRequestHeader("Authorization", "Basic " + btoa(user + ":" + pass));
   xhr.send(file);
 }
 
@@ -540,15 +635,15 @@ async function waitForReboot() {
       if (r.ok) {
         const d = await r.json();
         showAlert("ok", "Device back online \u2014 new version: " + (d.app_version || "?"),
-          "Running from partition <code>" + (d.running ? d.running.label : "?") + "</code>. " +
-          "<a href='/' style='color:var(--ok)'>Go to status page &rarr;</a>");
+          "Running from partition <code>" + (d.running ? d.running.label : "?") + "</code>. "
+          + "<a href='/' style='color:var(--ok)'>Go to status page &rarr;</a>");
         return;
       }
     } catch (e) { /* device still down, keep polling */ }
     if (tries < maxTries) setTimeout(tick, 2000);
     else showAlert("warn", "Device did not respond within 60 s",
-      "Check the serial console. The previous firmware may have been restored automatically " +
-      "if the new image failed health checks.");
+      "Check the serial console. The previous firmware may have been restored automatically "
+      + "if the new image failed health checks.");
   };
   tick();
 }
