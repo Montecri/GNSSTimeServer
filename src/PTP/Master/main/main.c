@@ -43,7 +43,7 @@
  * to capture the state quickly. For a standard L2 implementation on the P4
  * the current structure is already optimized for sub-microsecond accuracy.
  *
- * What GNSS timing mode buys (even if unused today):
+ * What GNSS timing mode buys:
  *   - Holdover stability: with much lower PPS jitter, short GPS outages leave
  *     the master with a far better free-running clock (timing-mode receivers
  *     typically advertise <100 ns holdover for several minutes vs. hundreds
@@ -133,7 +133,7 @@
 /* ─── Network / DHCP fallback ───
  * Fallback static IP — used if DHCP doesn't reply in time. Pick a private
  * subnet you don't use elsewhere. */
-#define DHCP_FALLBACK_TIMEOUT_MS 20000 /* wait up to 20 s for DHCP */
+#define DHCP_FALLBACK_TIMEOUT_MS 30000 /* wait up to 30 s for DHCP */
 #define STATIC_IP_ADDR ESP_IP4TOADDR(192, 168, 5, 2)
 #define STATIC_IP_NETMASK ESP_IP4TOADDR(255, 255, 255, 0)
 #define STATIC_IP_GATEWAY ESP_IP4TOADDR(192, 168, 5, 1)
@@ -141,7 +141,8 @@
 /* ─── PTP protocol (IEEE 1588-2008) ─── */
 #define PTP_SYNC_INTERVAL_MS 1000
 #define PTP_ANNOUNCE_INTERVAL_MS 2000
-#define PTP_TASK_PRIORITY 5
+// Defined at task creation
+// #define PTP_TASK_PRIORITY 5
 #define PTP_DOMAIN 0
 
 #define PTP_FLAG_TWO_STEP 0x0200
@@ -208,7 +209,8 @@
  *   PI  (no D):  max avg offset 5,940 ns, lingering steady-state error
  *   PID (KD=2):  max avg offset 5,260 ns, drives to zero
  *
- * Steady-state (±300 ns receiver noise, 1 hour after settling):
+ * Steady-state (±300 ns receiver noise, 1 hour after settling, partially
+ * obstructed sky view, urban jungle):
  *   30% of time within ±300 ns of true GPS time
  *   74% of time within ±1 µs
  *   89% of time within ±2 µs
@@ -422,6 +424,19 @@ typedef struct
     int64_t last_seen_ms;
 } slave_track_t;
 
+/* ─── Delay_Resp work item ───
+ * Carries the minimum needed to build a Delay_Resp off the receive thread:
+ * the RX hardware timestamp (the value the slave actually needs), the
+ * requesting port identity to echo back, and the sequenceId to echo. The
+ * wall-clock instant we send the response is irrelevant to PTP math, so
+ * deferring the send via this queue costs zero accuracy. */
+typedef struct
+{
+    struct timespec rx_hw_ts;
+    ptp_port_id_t req_port_id; /* echoed as requestingPortIdentity */
+    uint16_t req_seq;          /* host order */
+} delay_resp_job_t;
+
 /* ─── LED status states ─── */
 typedef enum
 {
@@ -488,6 +503,74 @@ static uint8_t g_clock_id[8];
 static uint8_t g_src_mac[6];
 static uint16_t g_sync_seq = 0;
 static uint16_t g_announce_seq = 0;
+
+/* ─── Sync-interval jitter instrumentation (read by web /api/health) ───
+ * Records the spacing between consecutive Sync HW TX timestamps in a small
+ * ring. The web layer computes min/max/mean/peak-to-peak on demand. Nominal
+ * spacing is the Sync interval (1000 ms); spacing that widens or scatters
+ * under load is the signature of ptp_tx_task being starved by the receive /
+ * Delay_Resp path — the exact thing a flood test is looking for. */
+#define SYNC_IVL_WIN 64
+static int64_t g_sync_ivl_us[SYNC_IVL_WIN] = {0};
+static uint32_t g_sync_ivl_head = 0;  /* next write index */
+static uint32_t g_sync_ivl_count = 0; /* total intervals recorded (lifetime) */
+static int64_t g_sync_prev_tx_ns = 0; /* previous Sync TX timestamp, ns */
+static portMUX_TYPE g_sync_ivl_mux = portMUX_INITIALIZER_UNLOCKED;
+
+/* Called once per Sync, with that Sync's HW TX timestamp. */
+static void ptp_sync_jitter_note(const struct timespec *tx)
+{
+    int64_t now_ns = (int64_t)tx->tv_sec * 1000000000LL + tx->tv_nsec;
+    portENTER_CRITICAL(&g_sync_ivl_mux);
+    if (g_sync_prev_tx_ns != 0)
+    {
+        g_sync_ivl_us[g_sync_ivl_head] = (now_ns - g_sync_prev_tx_ns) / 1000;
+        g_sync_ivl_head = (g_sync_ivl_head + 1) % SYNC_IVL_WIN;
+        g_sync_ivl_count++;
+    }
+    g_sync_prev_tx_ns = now_ns;
+    portEXIT_CRITICAL(&g_sync_ivl_mux);
+}
+
+/* Snapshot stats over the last min(count, SYNC_IVL_WIN) intervals (µs).
+ * Returns lifetime interval count; *out_window is how many samples the
+ * min/max/mean/last reflect. Called from the web layer (same TU). */
+static uint32_t ptp_sync_jitter_stats(int64_t *out_min, int64_t *out_max,
+                                      int64_t *out_mean, int64_t *out_last,
+                                      uint32_t *out_window)
+{
+    int64_t local[SYNC_IVL_WIN];
+    uint32_t count, head, n;
+    portENTER_CRITICAL(&g_sync_ivl_mux);
+    count = g_sync_ivl_count;
+    head = g_sync_ivl_head;
+    memcpy(local, g_sync_ivl_us, sizeof(local));
+    portEXIT_CRITICAL(&g_sync_ivl_mux);
+
+    n = (count < SYNC_IVL_WIN) ? count : SYNC_IVL_WIN;
+    if (n == 0)
+    {
+        *out_min = *out_max = *out_mean = *out_last = 0;
+        *out_window = 0;
+        return 0;
+    }
+    int64_t mn = INT64_MAX, mx = INT64_MIN, sum = 0;
+    for (uint32_t i = 0; i < n; i++)
+    {
+        int64_t v = local[(head + SYNC_IVL_WIN - 1 - i) % SYNC_IVL_WIN];
+        if (v < mn)
+            mn = v;
+        if (v > mx)
+            mx = v;
+        sum += v;
+    }
+    *out_min = mn;
+    *out_max = mx;
+    *out_mean = sum / (int64_t)n;
+    *out_last = local[(head + SYNC_IVL_WIN - 1) % SYNC_IVL_WIN];
+    *out_window = n;
+    return count;
+}
 
 /* ─── GPS time + PPS edge state ─── */
 static volatile uint64_t g_last_pps_phc_ns = 0;
@@ -587,6 +670,18 @@ static time_t g_last_announce_rx = 0;
 static slave_track_t g_slaves[SLAVE_TRACK_MAX] = {0};
 static portMUX_TYPE g_slaves_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
+/* ─── Delay_Resp producer/consumer + L2TAP TX serialization ───
+ * g_delay_resp_q decouples Delay_Req receipt (ptp_rx_task) from Delay_Resp
+ * transmission (delay_resp_task), so a Delay_Req flood can't stall the
+ * receive loop or starve Sync/Announce. g_l2tap_tx_mtx serializes writes to
+ * the shared g_l2tap_fd now that two tasks (delay_resp_task and ptp_tx_task)
+ * transmit concurrently on the dual-core P4. g_delay_resp_drops counts items
+ * dropped when the queue is full (graceful: the slave just loses one sample). */
+static QueueHandle_t g_delay_resp_q = NULL;
+static SemaphoreHandle_t g_l2tap_tx_mtx = NULL;
+static _Atomic uint32_t g_delay_resp_drops = 0;
+#define DELAY_RESP_Q_DEPTH 64
+
 /* ─── LED status ─── */
 static volatile uint32_t g_pps_led_pulse_seq = 0;
 /* Single shared state — written by app code, read by LED task. _Atomic
@@ -673,6 +768,9 @@ static void render_screen_network(void);
 static void render_screen_timing_cfg(void);
 static void slave_track_seen(const uint8_t *mac);
 static int slave_active_count(void);
+static void enqueue_delay_req(const uint8_t *ptp_payload, size_t len,
+                              const struct timespec *rx_hw_ts);
+static void delay_resp_task(void *arg);
 
 /* LED status API (public, non-static) — defined in the LED section, which
  * appears after the servo/timing core that calls led_set_state. */
@@ -886,10 +984,22 @@ static void build_ptp_header(ptp_header_t *h, uint8_t msg_type, uint16_t msg_len
  * ───────────────────────────────────────────────────────────────────────── */
 static int l2tap_send_ptp(const void *ptp_payload, size_t ptp_len, struct timespec *tx_ts)
 {
+    /* Fast-reject while emac_restart_preserve_phc() is mid-restart. Mirrors
+     * the servo_phc_ioctl pattern (see line 2040): a write through the
+     * L2TAP fd to a stopped EMAC is at best lost and at worst races the
+     * driver's internal descriptor teardown. The restart function ALSO
+     * takes g_l2tap_tx_mtx around its esp_eth_stop / esp_eth_start window,
+     * so a caller that passed this atomic check just before the restart
+     * began will drain its in-flight write() before stop() is called. */
+    if (atomic_load(&g_emac_restarting))
+        return -1;
+
     size_t frame_len = 14 + ptp_len;
 
-    uint8_t *frame = calloc(1, frame_len);
-    if (!frame)
+    /* No heap on the hot path. Largest frame we ever send is an Announce
+     * (14 + 64 = 78 bytes); 14 + 96 leaves comfortable headroom. */
+    uint8_t frame[14 + 96];
+    if (frame_len > sizeof(frame))
         return -1;
     memcpy(frame, PTP_MCAST_MAC, 6);
     memcpy(frame + 6, g_src_mac, 6);
@@ -916,8 +1026,18 @@ static int l2tap_send_ptp(const void *ptp_payload, size_t ptp_len, struct timesp
         .buff = frame,
     };
 
+    /* Serialize the shared g_l2tap_fd: delay_resp_task and ptp_tx_task can
+     * both reach here concurrently on the dual-core P4, and emac_restart_preserve_phc
+     * also takes this mutex around its stop/start. The fd is O_NONBLOCK,
+     * so write() returns immediately (EAGAIN if EMAC TX descriptors are full),
+     * keeping the hold time tiny. The TX timestamp returns in irec for THIS
+     * call's frame, so it must be read while still holding the lock. */
+    int ret;
+    if (g_l2tap_tx_mtx)
+        xSemaphoreTake(g_l2tap_tx_mtx, portMAX_DELAY);
+
     // TX timestamp is returned synchronously in irec after write()
-    int ret = write(g_l2tap_fd, &ext, 0);
+    ret = write(g_l2tap_fd, &ext, 0);
 
     // ret > 0 means success AND timestamp is valid
     if (ret > 0 && tx_ts != NULL && irec->type == L2TAP_IREC_TIME_STAMP)
@@ -931,7 +1051,9 @@ static int l2tap_send_ptp(const void *ptp_payload, size_t ptp_len, struct timesp
         // ESP_LOGE(TAG, "l2tap write FAILED errno=%d (%s)", errno, strerror(errno));
     }
 
-    free(frame);
+    if (g_l2tap_tx_mtx)
+        xSemaphoreGive(g_l2tap_tx_mtx);
+
     return ret;
 }
 
@@ -1099,60 +1221,96 @@ static int slave_active_count(void)
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION: PTP message handlers
  *
- * handle_delay_req answers an incoming Delay_Req with a Delay_Resp echoing
- * the RX hardware timestamp. send_sync_and_followup emits the two-step
- * Sync + Follow_Up pair (Follow_Up carries the Sync's HW TX timestamp).
- * send_announce emits the Announce with current clock-quality fields.
+ * enqueue_delay_req copies the incoming Delay_Req's RX hardware timestamp and
+ * identity onto g_delay_resp_q (called from the receive thread, does no I/O);
+ * delay_resp_task drains the queue and builds + sends the Delay_Resp off the
+ * receive thread. send_sync_and_followup emits the two-step Sync + Follow_Up
+ * pair (Follow_Up carries the Sync's HW TX timestamp). send_announce emits the
+ * Announce with current clock-quality fields.
  * ═════════════════════════════════════════════════════════════════════════ */
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Logic Functions
  * ───────────────────────────────────────────────────────────────────────── */
-static void handle_delay_req(const uint8_t *eth_frame, size_t frame_len,
-                             const struct timespec *rx_hw_ts)
+
+/* Receive-thread half: validate, snapshot, enqueue. No logging, no send, no
+ * heap — keep the receive loop free to take the next frame (including Sync /
+ * Announce, which must not be starved by a Delay_Req flood). */
+static void enqueue_delay_req(const uint8_t *ptp_payload, size_t len,
+                              const struct timespec *rx_hw_ts)
 {
-    if (frame_len < sizeof(ptp_delay_req_msg_t))
+    if (len < sizeof(ptp_delay_req_msg_t))
         return;
-    const ptp_delay_req_msg_t *req = (const ptp_delay_req_msg_t *)eth_frame;
+    const ptp_delay_req_msg_t *req = (const ptp_delay_req_msg_t *)ptp_payload;
 
-    uint16_t req_seq = ntohs(req->hdr.sequence_id);
+    delay_resp_job_t job;
+    job.rx_hw_ts = *rx_hw_ts;
+    job.req_port_id = req->hdr.source_port_id; /* packed-struct copy */
+    job.req_seq = ntohs(req->hdr.sequence_id);
 
-    /* Track this slave for the OLED screen-1 counter */
-    slave_track_seen(req->hdr.source_port_id.clock_identity);
+    /* Timeout 0: under flood, drop rather than block the receive loop. A
+     * dropped Delay_Resp costs the slave one delay sample — it simply tries
+     * again at its next logMinDelayReqInterval. Count drops for diagnostics. */
+    if (g_delay_resp_q == NULL ||
+        xQueueSend(g_delay_resp_q, &job, 0) != pdTRUE)
+        atomic_fetch_add(&g_delay_resp_drops, 1);
+}
 
-    /* NOTE: the previous version logged a multi-line RX_TS diagnostic here
-     * (rx_ts vs phc_now delta). Useful during bring-up, but it runs on the
-     * hot path of every Delay_Req — vfprintf + UART flush delay the
-     * outbound Delay_Resp by 100-300 µs and add jitter to the slave's
-     * round-trip measurement. Keep it gated behind verbose. */
-    ESP_LOGD("RX_TS", "DREQ seq=%u rx_ts=%lld.%09ld",
-             req_seq,
-             (long long)rx_hw_ts->tv_sec, (long)rx_hw_ts->tv_nsec);
+/* Worker-thread half: build and transmit the Delay_Resp. Also owns slave
+ * tracking now (display-only, so it belongs off the receive hot path). */
+static void delay_resp_task(void *arg)
+{
+    (void)arg;
+    delay_resp_job_t job;
 
-    ESP_LOGD("PTP_TX", "Sending DELAY_RESP seq=%u to %02x:%02x:%02x:%02x:%02x:%02x:%02x:%02x port %u",
-             req_seq,
-             req->hdr.source_port_id.clock_identity[0],
-             req->hdr.source_port_id.clock_identity[1],
-             req->hdr.source_port_id.clock_identity[2],
-             req->hdr.source_port_id.clock_identity[3],
-             req->hdr.source_port_id.clock_identity[4],
-             req->hdr.source_port_id.clock_identity[5],
-             req->hdr.source_port_id.clock_identity[6],
-             req->hdr.source_port_id.clock_identity[7],
-             ntohs(req->hdr.source_port_id.port_number));
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+    /* Heartbeat throttle: aggregate Delay_Req counts and emit one INFO line
+     * per second. The state and the throttle block are wrapped in
+     *   #if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+     * so when INFO is disabled at compile time the function is identical
+     * to its pre-heartbeat form — no timer read, no counter, no log call,
+     * nothing. ESP_LOGI itself already short-circuits at runtime when the
+     * tag's level has been lowered via esp_log_level_set, so we don't need
+     * to repeat that check here; we only need to gate the counter+timer
+     * work, which happens BEFORE the macro and can't be elided by it. */
+    uint32_t since_last_log = 0;
+    int64_t last_log_ms = esp_timer_get_time() / 1000;
+#endif
 
-    ptp_delay_resp_msg_t resp = {0};
+    for (;;)
+    {
+        if (xQueueReceive(g_delay_resp_q, &job, portMAX_DELAY) != pdTRUE)
+            continue;
 
-    /* CRITICAL: DELAY_RESP must echo the DELAY_REQ sequence ID. */
-    build_ptp_header(&resp.hdr, PTP_MSG_DELAY_RESP, sizeof(ptp_delay_resp_msg_t),
-                     req_seq, 0, 0, 0x03);
+#if LOG_LOCAL_LEVEL >= ESP_LOG_INFO
+        since_last_log++;
+        int64_t now_ms = esp_timer_get_time() / 1000;
+        if (now_ms - last_log_ms >= 1000)
+        {
+            ESP_LOGI("PTP_RX", "Delay_Req: %lu in last %lld ms",
+                     (unsigned long)since_last_log,
+                     (long long)(now_ms - last_log_ms));
+            since_last_log = 0;
+            last_log_ms = now_ms;
+        }
+#endif
 
-    encode_ptp_timestamp(&resp.receive_timestamp, rx_hw_ts);
-    memcpy(&resp.requesting_port_id, &req->hdr.source_port_id, sizeof(ptp_port_id_t));
+        /* Track this slave for the OLED screen-1 counter */
+        slave_track_seen(job.req_port_id.clock_identity);
 
-    int ret = l2tap_send_ptp(&resp, sizeof(resp), NULL);
-    if (ret <= 0)
-        ESP_LOGW("PTP_TX", "DELAY_RESP send failed: ret=%d errno=%d", ret, errno);
+        ptp_delay_resp_msg_t resp = {0};
+
+        /* CRITICAL: DELAY_RESP must echo the DELAY_REQ sequence ID. */
+        build_ptp_header(&resp.hdr, PTP_MSG_DELAY_RESP, sizeof(ptp_delay_resp_msg_t),
+                         job.req_seq, 0, 0, 0x03);
+
+        encode_ptp_timestamp(&resp.receive_timestamp, &job.rx_hw_ts);
+        resp.requesting_port_id = job.req_port_id;
+
+        int ret = l2tap_send_ptp(&resp, sizeof(resp), NULL);
+        if (ret <= 0)
+            ESP_LOGW("PTP_TX", "DELAY_RESP send failed: ret=%d errno=%d", ret, errno);
+    }
 }
 
 static void send_sync_and_followup(void)
@@ -1187,6 +1345,9 @@ static void send_sync_and_followup(void)
      * This widened FU latency seen by slaves and added timing jitter.
      * Use ESP_LOGD if you need it back during bring-up. */
     (void)used_fallback;
+
+    /* Record on-wire Sync spacing for the web /api/health dashboard. */
+    ptp_sync_jitter_note(&t1);
 
     ptp_sync_msg_t fu = {0};
     build_ptp_header(&fu.hdr, PTP_MSG_FOLLOW_UP, sizeof(ptp_sync_msg_t),
@@ -2863,8 +3024,9 @@ static void ptp_rx_task(void *arg)
         switch (msg_type)
         {
         case PTP_MSG_DELAY_REQ:
-            ESP_LOGI("PTP_RX", "DELAY_REQ received, len=%u", (unsigned)eth_len);
-            handle_delay_req(eth_frame + 14, eth_len - 14, &hw_ts);
+            /* Snapshot + enqueue only; delay_resp_task builds and sends.
+             * No logging on the receive hot path. */
+            enqueue_delay_req(eth_frame + 14, eth_len - 14, &hw_ts);
             break;
 
         case PTP_MSG_ANNOUNCE:
@@ -3013,133 +3175,146 @@ static void emac_restart_preserve_phc(void)
     ESP_LOGW("WDT", "Attempting EMAC restart with PHC preservation (count=%lu)",
              (unsigned long)(g_emac_restart_count + 1));
 
+    /* Two-stage gating against in-flight L2TAP TX:
+     *   (1) Set g_emac_restarting so new l2tap_send_ptp / servo_phc_ioctl
+     *       callers fast-reject (return -1 / false) instead of touching the
+     *       EMAC while we're stopping it.
+     *   (2) Take g_l2tap_tx_mtx so any caller already past the atomic check
+     *       on the other core — i.e. mid-write() right now — completes
+     *       before we call esp_eth_stop(). Released in the cleanup block
+     *       below; every fail path inside the do/while(0) uses `break` so
+     *       the mutex never leaks. */
     atomic_store(&g_emac_restarting, true);
+    if (g_l2tap_tx_mtx)
+        xSemaphoreTake(g_l2tap_tx_mtx, portMAX_DELAY);
 
-    /* ── Step 1: Snapshot PHC and esp_timer simultaneously ──
-     * Read PHC first, then esp_timer immediately. Keep these two
-     * statements adjacent — any code between them adds capture error.
-     * Disable interrupts to ensure no preemption between samples. */
-    struct timespec ts_before;
-    int64_t mono_before_us;
-
-    /* Use the SHARED servo spinlock, not a stack-local mux. A local mux
-     * provides no cross-core exclusion on the dual-core P4 — it only disables
-     * interrupts on this core. g_servo_spinlock is the mux that already guards
-     * PHC/servo state, so taking it here serializes the PHC+esp_timer snapshot
-     * against servo_task (which may be running on the other core). */
-    taskENTER_CRITICAL(&g_servo_spinlock);
-    emac_get_time(&ts_before);
-    mono_before_us = esp_timer_get_time();
-    taskEXIT_CRITICAL(&g_servo_spinlock);
-
-    int64_t phc_ns_before = (int64_t)ts_before.tv_sec * 1000000000LL +
-                            (int64_t)ts_before.tv_nsec;
-
-    /* Snapshot the current frequency adjustment so we can re-apply it.
-     * g_freq_ppb is updated by servo_task; spinlock-protected read. */
-    taskENTER_CRITICAL(&g_servo_spinlock);
-    double saved_freq_ppb = g_freq_ppb;
-    taskEXIT_CRITICAL(&g_servo_spinlock);
-
-    ESP_LOGI("WDT", "PHC snapshot: %lld.%09ld (mono=%lld us, freq_ppb=%.0f)",
-             (long long)ts_before.tv_sec,
-             (long)ts_before.tv_nsec,
-             (long long)mono_before_us,
-             saved_freq_ppb);
-
-    /* ── Step 2: Stop driver ── */
-    esp_err_t err = esp_eth_stop(g_eth_hndl);
-    if (err != ESP_OK)
+    /* Single-iteration "break loop" so every fail path exits to the
+     * cleanup below without goto and without repeating cleanup code. */
+    do
     {
-        ESP_LOGE("WDT", "esp_eth_stop failed: %s", esp_err_to_name(err));
+        /* ── Step 1: Snapshot PHC and esp_timer simultaneously ──
+         * Read PHC first, then esp_timer immediately. Keep these two
+         * statements adjacent — any code between them adds capture error.
+         * Disable interrupts to ensure no preemption between samples. */
+        struct timespec ts_before;
+        int64_t mono_before_us;
+
+        /* Use the SHARED servo spinlock, not a stack-local mux. A local mux
+         * provides no cross-core exclusion on the dual-core P4 — it only
+         * disables interrupts on this core. g_servo_spinlock is the mux
+         * that already guards PHC/servo state, so taking it here serializes
+         * the PHC+esp_timer snapshot against servo_task (which may be
+         * running on the other core). */
+        taskENTER_CRITICAL(&g_servo_spinlock);
+        emac_get_time(&ts_before);
+        mono_before_us = esp_timer_get_time();
+        taskEXIT_CRITICAL(&g_servo_spinlock);
+
+        int64_t phc_ns_before = (int64_t)ts_before.tv_sec * 1000000000LL +
+                                (int64_t)ts_before.tv_nsec;
+
+        /* Snapshot the current frequency adjustment so we can re-apply it.
+         * g_freq_ppb is updated by servo_task; spinlock-protected read. */
+        taskENTER_CRITICAL(&g_servo_spinlock);
+        double saved_freq_ppb = g_freq_ppb;
+        taskEXIT_CRITICAL(&g_servo_spinlock);
+
+        ESP_LOGI("WDT", "PHC snapshot: %lld.%09ld (mono=%lld us, freq_ppb=%.0f)",
+                 (long long)ts_before.tv_sec,
+                 (long)ts_before.tv_nsec,
+                 (long long)mono_before_us,
+                 saved_freq_ppb);
+
+        /* ── Step 2: Stop driver ── */
+        esp_err_t err = esp_eth_stop(g_eth_hndl);
+        if (err != ESP_OK)
         {
-            atomic_store(&g_emac_restarting, false);
-            return;
+            ESP_LOGE("WDT", "esp_eth_stop failed: %s", esp_err_to_name(err));
+            break;
         }
-    }
 
-    vTaskDelay(pdMS_TO_TICKS(100));
+        vTaskDelay(pdMS_TO_TICKS(100));
 
-    /* ── Step 3: Restart driver ── */
-    err = esp_eth_start(g_eth_hndl);
-    if (err != ESP_OK)
-    {
-        ESP_LOGE("WDT", "esp_eth_start failed: %s", esp_err_to_name(err));
+        /* ── Step 3: Restart driver ── */
+        err = esp_eth_start(g_eth_hndl);
+        if (err != ESP_OK)
         {
-            atomic_store(&g_emac_restarting, false);
-            return;
+            ESP_LOGE("WDT", "esp_eth_start failed: %s", esp_err_to_name(err));
+            break;
         }
-    }
 
-    /* ── Step 4: Re-enable PTP ── */
-    bool ptp_en = true;
-    esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_PTP_ENABLE, &ptp_en);
+        /* ── Step 4: Re-enable PTP ── */
+        bool ptp_en = true;
+        esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_PTP_ENABLE, &ptp_en);
 
-    /* Brief delay to let PHC start ticking */
-    vTaskDelay(pdMS_TO_TICKS(20));
+        /* Brief delay to let PHC start ticking */
+        vTaskDelay(pdMS_TO_TICKS(20));
 
-    /* ── Step 5: Compute extrapolated time and write to PHC ──
-     * We want to set PHC to "what it would have been if it never stopped."
-     *
-     * Elapsed monotonic time across the dead window:
-     *   dt_us = mono_now - mono_before_us
-     *
-     * Apply the servo's frequency adjustment so PHC advances at the
-     * same rate it WOULD have if it had been running:
-     *   PHC_advance_ns = dt_us × 1000 × (1 + freq_ppb × 1e-9)
-     *
-     * For a 120ms dead window with freq_ppb = -47000:
-     *   freq correction = -47000 × 1e-9 × 120e6 ns = -5640 ns
-     * Without this correction, we'd be off by ~5.6µs.
-     *
-     * Read esp_timer as late as possible — right before the ioctl write —
-     * to minimize gap between our extrapolation and the write taking effect. */
-    int64_t mono_after_us = esp_timer_get_time();
-    int64_t dt_us = mono_after_us - mono_before_us;
-    int64_t dt_ns = dt_us * 1000LL;
+        /* ── Step 5: Compute extrapolated time and write to PHC ──
+         * We want to set PHC to "what it would have been if it never stopped."
+         *
+         * Elapsed monotonic time across the dead window:
+         *   dt_us = mono_now - mono_before_us
+         *
+         * Apply the servo's frequency adjustment so PHC advances at the
+         * same rate it WOULD have if it had been running:
+         *   PHC_advance_ns = dt_us × 1000 × (1 + freq_ppb × 1e-9)
+         *
+         * For a 120ms dead window with freq_ppb = -47000:
+         *   freq correction = -47000 × 1e-9 × 120e6 ns = -5640 ns
+         * Without this correction, we'd be off by ~5.6µs.
+         *
+         * Read esp_timer as late as possible — right before the ioctl
+         * write — to minimize gap between our extrapolation and the write
+         * taking effect. */
+        int64_t mono_after_us = esp_timer_get_time();
+        int64_t dt_us = mono_after_us - mono_before_us;
+        int64_t dt_ns = dt_us * 1000LL;
 
-    /* Apply frequency correction. saved_freq_ppb is in ppb (1e-9 units). */
-    int64_t freq_correction_ns = (int64_t)((double)dt_ns * saved_freq_ppb * 1e-9);
-    int64_t target_ns = phc_ns_before + dt_ns + freq_correction_ns;
+        /* Apply frequency correction. saved_freq_ppb is in ppb (1e-9 units). */
+        int64_t freq_correction_ns = (int64_t)((double)dt_ns * saved_freq_ppb * 1e-9);
+        int64_t target_ns = phc_ns_before + dt_ns + freq_correction_ns;
 
-    if (target_ns < 0)
-    {
-        ESP_LOGE("WDT", "Computed negative target time, aborting");
+        if (target_ns < 0)
         {
-            atomic_store(&g_emac_restarting, false);
-            return;
+            ESP_LOGE("WDT", "Computed negative target time, aborting");
+            break;
         }
-    }
 
-    eth_mac_time_t t = {
-        .seconds = (uint32_t)(target_ns / 1000000000LL),
-        .nanoseconds = (uint32_t)(target_ns % 1000000000LL),
-    };
+        eth_mac_time_t t = {
+            .seconds = (uint32_t)(target_ns / 1000000000LL),
+            .nanoseconds = (uint32_t)(target_ns % 1000000000LL),
+        };
 
-    esp_err_t set_err = esp_eth_ioctl(g_eth_hndl,
-                                      ETH_MAC_ESP_CMD_S_PTP_TIME,
-                                      &t);
-    if (set_err != ESP_OK)
-    {
-        ESP_LOGE("WDT", "S_PTP_TIME failed: %s", esp_err_to_name(set_err));
+        esp_err_t set_err = esp_eth_ioctl(g_eth_hndl,
+                                          ETH_MAC_ESP_CMD_S_PTP_TIME,
+                                          &t);
+        if (set_err != ESP_OK)
         {
-            atomic_store(&g_emac_restarting, false);
-            return;
+            ESP_LOGE("WDT", "S_PTP_TIME failed: %s", esp_err_to_name(set_err));
+            break;
         }
-    }
 
-    /* ── Step 6: Re-apply frequency adjustment ── */
-    int32_t adj_ppb = (int32_t)saved_freq_ppb;
-    esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_ppb);
+        /* ── Step 6: Re-apply frequency adjustment ── */
+        int32_t adj_ppb = (int32_t)saved_freq_ppb;
+        esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_ppb);
 
-    g_emac_restart_count++;
+        g_emac_restart_count++;
 
-    ESP_LOGW("WDT",
-             "EMAC restart complete: dt=%lld us, freq_corr=%lld ns, target=%u.%09u",
-             (long long)dt_us,
-             (long long)freq_correction_ns,
-             t.seconds, t.nanoseconds);
+        ESP_LOGW("WDT",
+                 "EMAC restart complete: dt=%lld us, freq_corr=%lld ns, target=%u.%09u",
+                 (long long)dt_us,
+                 (long long)freq_correction_ns,
+                 t.seconds, t.nanoseconds);
+    } while (0);
 
+    /* Cleanup (runs on every exit, success or failure).
+     * Reverse of the entry order: release the TX mutex first (any callers
+     * blocked on it can now wake), then clear the atomic flag so new
+     * callers can pass the fast-reject check. Both orderings are race-free;
+     * this one matches the conventional acquire/release nesting. */
+    if (g_l2tap_tx_mtx)
+        xSemaphoreGive(g_l2tap_tx_mtx);
     atomic_store(&g_emac_restarting, false);
 }
 
@@ -3777,9 +3952,29 @@ static void render_screen_servo(void)
     snprintf(buf, sizeof(buf), "Adj: %+d ppb", (int)freq_ppb);
     u8g2_DrawStr(&u8g2, 0, 44, buf);
 
-    /* Integrator + PPS count on bottom line */
-    snprintf(buf, sizeof(buf), "I:%+d PPS:%lu",
-             (int)integ, (unsigned long)pps_count);
+    /* Integrator + PPS count, both compacted to <=6 chars to stay within
+     * screen-2's 21-char budget (6px font). g_integral is clamped to +/-2e9,
+     * so its magnitude fits in uint32 — same width the compiler can prove for
+     * pps_count, which is what keeps -Wformat-truncation happy. */
+    char istr[12], pstr[12];
+    int64_t iv = (int64_t)integ;
+    uint32_t im = (uint32_t)llabs(iv);
+    char isign = (iv < 0) ? '-' : '+';
+    if (im < 100000UL)
+        snprintf(istr, sizeof(istr), "%c%lu", isign, (unsigned long)im);
+    else if (im < 10000000UL)
+        snprintf(istr, sizeof(istr), "%c%luk", isign, (unsigned long)(im / 1000UL));
+    else
+        snprintf(istr, sizeof(istr), "%c%luM", isign, (unsigned long)(im / 1000000UL));
+
+    if (pps_count < 100000UL)
+        snprintf(pstr, sizeof(pstr), "%lu", (unsigned long)pps_count);
+    else if (pps_count < 10000000UL)
+        snprintf(pstr, sizeof(pstr), "%luk", (unsigned long)(pps_count / 1000UL));
+    else
+        snprintf(pstr, sizeof(pstr), "%luM", (unsigned long)(pps_count / 1000000UL));
+
+    snprintf(buf, sizeof(buf), "I:%s PPS:%s", istr, pstr);
     u8g2_DrawStr(&u8g2, 0, 55, buf);
 }
 
@@ -3860,7 +4055,7 @@ static void render_screen_gps(void)
     u8g2_DrawStr(&u8g2, 0, 45, buf);
 
     /* SV counts */
-    snprintf(buf, sizeof(buf), "SVs: %u view / %u used", sv_view, sv_used);
+    snprintf(buf, sizeof(buf), "SVs:%u view /%u used", sv_view, sv_used);
     u8g2_DrawStr(&u8g2, 0, 55, buf);
 
     /* Fix-quality hint */
@@ -4411,10 +4606,22 @@ static void gps_uart_init(void)
 
 static void pps_init(void)
 {
+    /* The PPS pin is edge-triggered. If the GNSS module is absent or the
+     * cable is disconnected, this pin floats and a POSEDGE interrupt will
+     * fire continuously on ambient noise — a textbook interrupt storm. The
+     * handler then ran against an uninitialized g_eth_hndl/g_pps_sem (we
+     * were called before ethernet_init and before the semaphores exist, fixed on app_main now also),
+     * which aborted and crashed the panic handler on whichever task happened
+     * to be current. Anchor the pin LOW with the internal pull-down so a
+     * disconnected/missing GNSS leaves the pin defined; PPS is idle-low /
+     * active-high, so this matches the signal's normal resting state and
+     * does not interfere with a real PPS output. */
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PPS_GPIO),
-        .mode = GPIO_MODE_INPUT,
-        .intr_type = GPIO_INTR_POSEDGE,
+        .mode         = GPIO_MODE_INPUT,
+        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .pull_down_en = GPIO_PULLDOWN_ENABLE,
+        .intr_type    = GPIO_INTR_POSEDGE,
     };
 
     gpio_config(&io_conf);
@@ -4444,6 +4651,8 @@ static void timing_config_error_cb(const char *failed_step_name)
 
 void app_main(void)
 {
+    // If your loggin is not working (nothing is being produced at serial output), look at sdkconfig.defaults to know why
+    // and re-enable it, if desired
     esp_log_level_set("*", ESP_LOG_INFO);
     // esp_log_level_set("*", ESP_LOG_WARN);
     //  esp_log_level_set("PTP_SERVER", ESP_LOG_INFO);
@@ -4472,15 +4681,32 @@ void app_main(void)
     xTaskCreate(button_task, "btn", BUTTON_TASK_STACK, NULL, BUTTON_TASK_PRIO, NULL);
     xTaskCreate(display_task, "display", DISPLAY_TASK_STACK, NULL, DISPLAY_TASK_PRIO, NULL);
 
-    pps_init();
+    /* ─────────────────────────────────────────────────────────────────────
+     * Order matters: every dependency of pps_isr_handler must exist BEFORE
+     * pps_init() arms the GPIO interrupt. The handler does:
+     *     emac_get_time(&ts)       → esp_eth_ioctl(g_eth_hndl, ...)
+     *     xSemaphoreGiveFromISR(g_pps_sem, ...)
+     * so g_pps_sem must be created and g_eth_hndl must be populated (i.e.
+     * ethernet_init + esp_eth_start completed) before the first edge can
+     * possibly fire. Otherwise a PPS pulse landing in this window — or a
+     * floating PPS pin firing on noise when no GNSS module is attached —
+     * dereferences NULL inside the ISR and panics the box at boot.
+     * ───────────────────────────────────────────────────────────────────── */
 
     g_eth_up_sem = xSemaphoreCreateBinary();
     g_pps_sem = xSemaphoreCreateBinary();
+
+    /* Serializes the shared L2TAP fd across delay_resp_task + ptp_tx_task.
+     * Must exist before any l2tap_send_ptp call (the PTP tasks below). */
+    g_l2tap_tx_mtx = xSemaphoreCreateMutex();
 
     /* Ethernet driver init + start. Will not block waiting for link. */
     ethernet_init();
     ESP_ERROR_CHECK(esp_eth_start(g_eth_hndl));
     ESP_LOGI("ETH", "Ethernet started (link state will be reported on connect)");
+
+    /* Now safe to arm the PPS GPIO interrupt: g_pps_sem and g_eth_hndl exist. */
+    pps_init();
 
     /* Start the LED subsystem BEFORE timing_core_bringup, so that if bring-up
      * fails it can surface LED_STATE_FAULT to a running LED task. Initial state
@@ -4541,6 +4767,15 @@ void app_main(void)
     xTaskCreate(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
 
     /* Launch all tasks now. They self-gate on g_link_up / g_l2tap_ready. */
+
+    /* Delay_Resp producer/consumer: create the queue and worker BEFORE the RX
+     * task, so enqueue_delay_req always has a valid queue. Worker priority 6
+     * sits below the RX receive loop (7) and at/above the Sync/Announce TX
+     * task (5), so receiving and Sync cadence both win over Delay_Resp under
+     * flood. */
+    g_delay_resp_q = xQueueCreate(DELAY_RESP_Q_DEPTH, sizeof(delay_resp_job_t));
+    xTaskCreate(delay_resp_task, "dresp", 4096, NULL, 6, NULL);
+
     xTaskCreate(ptp_rx_task, "ptp_rx", 8192, NULL, 7, NULL);
     xTaskCreate(ptp_tx_task, "ptp_tx", 8192, NULL, 5, NULL);
 
