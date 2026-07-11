@@ -52,6 +52,7 @@ jobs:
 
       - name: Build ESP-IDF project
         if: matrix.language == 'c-cpp'
+        working-directory: src/PTP/Master
         shell: bash
         run: |
           idf.py set-target esp32p4
