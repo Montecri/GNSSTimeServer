@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Ccircle%20cx='32'%20cy='32'%20r='30'%20fill='%232563eb'%20stroke='%2393c5fd'%20stroke-width='2.5'/%3E%3Cg%20stroke='%23dbeafe'%20stroke-width='2.5'%20stroke-linecap='round'%20opacity='0.75'%3E%3Cline%20x1='32'%20y1='7'%20x2='32'%20y2='12'/%3E%3Cline%20x1='32'%20y1='52'%20x2='32'%20y2='57'/%3E%3Cline%20x1='7'%20y1='32'%20x2='12'%20y2='32'/%3E%3Cline%20x1='52'%20y1='32'%20x2='57'%20y2='32'/%3E%3C/g%3E%3Cg%20stroke='%23ffffff'%20stroke-linecap='round'%20fill='none'%3E%3Cpath%20d='M%2032%2032%20L%2023%2026'%20stroke-width='5.5'/%3E%3Cpath%20d='M%2032%2032%20L%2043%2021'%20stroke-width='5'/%3E%3C/g%3E%3Ccircle%20cx='32'%20cy='32'%20r='3.5'%20fill='%23ffffff'/%3E%3C/svg%3E">
+<title>PTP Slave &mdash; ESP32-P4</title>
+<style>
+  :root {
+    --bg-0:#0b1018; --bg-1:#121a26; --bg-2:#1a2536; --bg-3:#233047;
+    --line:#2a3a55; --line-soft:#1f2c42;
+    --text:#e6edf7; --text-dim:#8fa1bf; --text-mute:#5a6c8a;
+    --accent:#7aa2f7; --accent-2:#bd93f9;
+    --ok:#50fa7b; --warn:#ffb86c; --err:#ff5577;
+    --info:#8be9fd; --purple:#bd93f9; --gold:#f1c40f;
+    --grid-glow:rgba(122,162,247,0.08);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Consolas,"Courier New",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --emoji:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Segoe UI Symbol",sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg-0); color:var(--text); font-family:var(--sans); -webkit-font-smoothing:antialiased; min-height:100vh; }
+  body {
+    background:
+      radial-gradient(circle at 15% 0%, rgba(122,162,247,0.06) 0%, transparent 40%),
+      radial-gradient(circle at 85% 100%, rgba(189,147,249,0.05) 0%, transparent 40%),
+      linear-gradient(180deg,var(--bg-0) 0%,#060a12 100%);
+    background-attachment:fixed;
+  }
+  body::before {
+    content:""; position:fixed; inset:0;
+    background-image:
+      linear-gradient(var(--grid-glow) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid-glow) 1px,transparent 1px);
+    background-size:48px 48px; pointer-events:none; z-index:0; opacity:0.4;
+  }
+  .container { position:relative; z-index:1; max-width:1280px; margin:0 auto; padding:28px 24px 48px; }
+
+  header { display:flex; align-items:center; justify-content:space-between; gap:16px;
+           padding-bottom:20px; border-bottom:1px solid var(--line-soft); margin-bottom:24px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:14px; }
+  .brand .mark { width:44px; height:44px; border-radius:10px;
+                 background:linear-gradient(135deg,var(--accent) 0%,var(--accent-2) 100%);
+                 display:flex; align-items:center; justify-content:center;
+                 font-family:var(--mono); font-weight:800; font-size:18px; color:var(--bg-0);
+                 letter-spacing:-0.5px; box-shadow:0 0 24px rgba(122,162,247,0.3); }
+  .brand h1 { margin:0; font-size:20px; font-weight:600; letter-spacing:0.2px; }
+  .brand .sub { margin:2px 0 0; font-family:var(--mono); font-size:11px; color:var(--text-dim); letter-spacing:0.5px; }
+  .fw-ver { color:var(--accent); font-weight:600; }
+
+  .status-pill { display:inline-flex; align-items:center; gap:8px; padding:8px 14px;
+                 border-radius:999px; background:rgba(80,250,123,0.08);
+                 border:1px solid rgba(80,250,123,0.3);
+                 font-family:var(--mono); font-size:12px; letter-spacing:1px; color:var(--ok);
+                 transition:all 0.3s ease; }
+  .status-pill.warn { background:rgba(255,184,108,0.08); border-color:rgba(255,184,108,0.3); color:var(--warn); }
+  .status-pill.warn .dot { background:var(--warn); box-shadow:0 0 8px var(--warn); }
+  .status-pill.err { background:rgba(255,85,119,0.08); border-color:rgba(255,85,119,0.3); color:var(--err); }
+  .status-pill.err .dot { background:var(--err); box-shadow:0 0 8px var(--err); }
+  .status-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--ok);
+                      box-shadow:0 0 8px var(--ok); animation:pulse 2s ease-in-out infinite; }
+  @keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(0.85);} }
+
+  .grid { display:grid; grid-template-columns:repeat(12,1fr); gap:18px; }
+  .card { background:linear-gradient(180deg,var(--bg-1) 0%,var(--bg-2) 100%);
+          border:1px solid var(--line-soft); border-radius:14px; padding:18px 20px;
+          position:relative; overflow:hidden; transition:border-color 0.2s ease; }
+  .card:hover { border-color:var(--line); }
+  .card::before { content:""; position:absolute; top:0; left:0; right:0; height:1px;
+                  background:linear-gradient(90deg,transparent,var(--line),transparent); }
+  .card-header { display:flex; align-items:center; justify-content:space-between;
+                 margin-bottom:14px; padding-bottom:10px; border-bottom:1px dashed var(--line-soft); }
+  .card-header h2 { margin:0; font-size:11px; font-weight:700; letter-spacing:2px;
+                    text-transform:uppercase; color:var(--text-dim); }
+  .card-header .badge { font-family:var(--mono); font-size:10px; color:var(--text-mute); letter-spacing:0.5px; }
+
+  .col-3{grid-column:span 3;} .col-4{grid-column:span 4;} .col-5{grid-column:span 5;}
+  .col-6{grid-column:span 6;} .col-7{grid-column:span 7;} .col-8{grid-column:span 8;}
+  .col-12{grid-column:span 12;}
+  @media (max-width:960px){ .col-3,.col-4,.col-5,.col-6,.col-7,.col-8{grid-column:span 12;} }
+
+  .rows { display:flex; flex-direction:column; gap:2px; }
+  .row { display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:12px;
+         padding:9px 4px; border-bottom:1px solid transparent; transition:background 0.15s ease; }
+  .row:hover { background:rgba(255,255,255,0.015); }
+  .row + .row { border-top:1px solid var(--line-soft); }
+  .row .icon { font-family:var(--emoji); font-size:18px; line-height:1;
+               text-align:center; width:28px; display:inline-flex;
+               align-items:center; justify-content:center; filter:saturate(1.1); }
+  .row .label { font-size:13px; color:var(--text); font-weight:500; letter-spacing:0.1px; }
+  .row .label .hint { display:block; font-family:var(--mono); font-size:10px;
+                      color:var(--text-mute); font-weight:400; margin-top:2px; letter-spacing:0.3px; }
+  .row .value { font-family:var(--mono); font-size:12.5px; color:var(--text);
+                text-align:right; font-variant-numeric:tabular-nums;
+                transition:color 0.3s ease; }
+  .row .value.dim{color:var(--text-dim);} .row .value.ok{color:var(--ok);}
+  .row .value.warn{color:var(--warn);} .row .value.err{color:var(--err);}
+  .row .value.info{color:var(--info);} .row .value.accent{color:var(--accent);}
+  .row .value.purple{color:var(--purple);}
+  .row .value.hostname{max-width:220px;min-width:0;overflow-wrap:anywhere;line-height:1.25;}
+
+  .chip { display:inline-block; padding:2px 8px; border-radius:4px;
+          font-family:var(--mono); font-size:11px; letter-spacing:0.5px;
+          border:1px solid currentColor; background:rgba(255,255,255,0.02); }
+  .chip.ok{color:var(--ok); background:rgba(80,250,123,0.08);}
+  .chip.warn{color:var(--warn); background:rgba(255,184,108,0.08);}
+  .chip.err{color:var(--err); background:rgba(255,85,119,0.08);}
+  .chip.info{color:var(--info); background:rgba(139,233,253,0.08);}
+
+  .hero { grid-column:span 12; display:grid; grid-template-columns:repeat(4,1fr); gap:18px; }
+  @media (max-width:960px){ .hero{grid-template-columns:repeat(2,1fr);} }
+  .metric { background:linear-gradient(180deg,var(--bg-1) 0%,var(--bg-2) 100%);
+            border:1px solid var(--line-soft); border-radius:14px; padding:18px 20px;
+            position:relative; overflow:hidden; transition:border-color 0.3s ease; }
+  .metric .metric-head { display:flex; align-items:center; gap:10px; margin-bottom:12px; }
+  .metric .metric-head .icon { font-family:var(--emoji); font-size:18px; }
+  .metric .metric-head .label { font-size:10px; letter-spacing:2px; text-transform:uppercase;
+                                color:var(--text-dim); font-weight:700; }
+  .metric .big { font-family:var(--mono); font-size:26px; font-weight:700;
+                 color:var(--text); letter-spacing:-0.5px; line-height:1.1;
+                 transition:color 0.3s ease; }
+  .metric .big .unit { font-size:14px; color:var(--text-dim); }
+  .metric .sub { margin-top:6px; font-family:var(--mono); font-size:11px;
+                 color:var(--text-mute); letter-spacing:0.3px; }
+  .metric.locked { border-color:rgba(80,250,123,0.25); }
+  .metric.locked .big { color:var(--ok); }
+  .metric.holdover { border-color:rgba(255,184,108,0.25); }
+  .metric.holdover .big { color:var(--warn); }
+  .metric.fault, .metric.no-link { border-color:rgba(255,85,119,0.25); }
+  .metric.fault .big, .metric.no-link .big { color:var(--err); }
+
+  .tasks { width:100%; border-collapse:collapse; font-size:12px; font-family:var(--mono); }
+  .tasks thead th { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line);
+                    color:var(--text-dim); font-weight:600; font-size:10px;
+                    letter-spacing:1.5px; text-transform:uppercase; }
+  .tasks tbody td { padding:7px 10px; border-bottom:1px solid var(--line-soft);
+                    color:var(--text); font-variant-numeric:tabular-nums; }
+  .tasks tbody tr:hover { background:rgba(255,255,255,0.02); }
+  .tasks .tname { display:inline-flex; align-items:center; gap:8px; }
+  .tasks .tname .icon { font-family:var(--emoji); font-size:14px; }
+  .prio { display:inline-block; min-width:22px; text-align:center; padding:1px 6px;
+          border-radius:4px; font-size:11px; font-weight:700; }
+  .prio.p7{background:rgba(255,85,119,0.15); color:var(--err);}
+  .prio.p6{background:rgba(255,184,108,0.15); color:var(--warn);}
+  .prio.p5{background:rgba(241,196,15,0.15); color:var(--gold);}
+  .prio.p2{background:rgba(139,233,253,0.15); color:var(--info);}
+  .prio.p1{background:rgba(122,162,247,0.15); color:var(--accent);}
+  .bar { display:inline-block; width:60px; height:5px; background:var(--bg-3);
+         border-radius:99px; overflow:hidden; vertical-align:middle; margin-right:8px; }
+  .bar > i { display:block; height:100%;
+             background:linear-gradient(90deg,var(--accent),var(--accent-2));
+             border-radius:99px; transition:width 0.5s ease; }
+
+  footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line-soft);
+           text-align:center; font-family:var(--mono); font-size:10.5px;
+           color:var(--text-mute); letter-spacing:1px; }
+  footer a { color:var(--accent); text-decoration:none; border-bottom:1px dashed transparent;
+             transition:border-color 0.2s ease; }
+  footer a:hover { border-bottom-color:var(--accent); }
+  footer .live { color:var(--accent); margin-left:6px; }
+  footer .sep { margin:0 8px; color:var(--text-mute); opacity:0.5; }
+
+  /* OTA link button in header */
+  .ota-link {
+    display:inline-flex; align-items:center; gap:8px;
+    padding:8px 14px; border-radius:999px;
+    background:rgba(189,147,249,0.08);
+    border:1px solid rgba(189,147,249,0.3);
+    font-family:var(--mono); font-size:12px; letter-spacing:1px;
+    color:var(--accent-2); text-decoration:none;
+    transition:all 0.2s ease;
+    margin-right:8px;
+  }
+  .ota-link:hover {
+    background:rgba(189,147,249,0.15);
+    border-color:var(--accent-2);
+    transform:translateY(-1px);
+  }
+  .ota-link .icon { font-family:var(--emoji); font-size:14px; }
+
+  .header-actions { display:flex; align-items:center; gap:0; flex-wrap:wrap; }
+
+  /* fade flash on update */
+  .flash { animation:flash 0.6s ease; }
+  @keyframes flash { 0%{background:rgba(122,162,247,0.1);} 100%{background:transparent;} }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="brand">
+      <div class="mark">P4</div>
+      <div>
+        <h1>PTP Slave &mdash; ESP32-P4 Ordinary Clock</h1>
+        <div class="sub">IEEE 1588-2008 &middot; L2/Ethernet Transport &middot; Domain 0
+          &middot; <span class="fw-ver" id="hdr_fw">fw &mdash;</span></div>
+      </div>
+    </div>
+    <div class="header-actions">
+      <a class="ota-link" href="/ota" title="Firmware update">
+        <span class="icon">&#x1F680;</span><span>OTA UPDATE</span>
+      </a>
+      <div class="status-pill" id="hdrStatus">
+        <span class="dot"></span><span id="hdrStatusText">CONNECTING&hellip;</span>
+      </div>
+    </div>
+  </header>
+
+  <div class="grid">
+
+    <!-- HERO METRICS -->
+    <div class="hero">
+      <div class="metric" id="m_state">
+        <div class="metric-head"><span class="icon">&#x1F512;</span><span class="label">Sync State</span></div>
+        <div class="big" id="v_state">&mdash;</div>
+        <div class="sub" id="v_state_sub">awaiting first Sync</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="icon">&#x1F3AF;</span><span class="label">Offset to GM</span></div>
+        <div class="big" id="v_offset">&mdash;</div>
+        <div class="sub" id="v_offset_sub">live PTP offset</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="icon">&#x21C4;</span><span class="label">Path Delay</span></div>
+        <div class="big" id="v_pathdelay">&mdash;</div>
+        <div class="sub" id="v_pathdelay_sub">one-way</div>
+      </div>
+      <div class="metric">
+        <div class="metric-head"><span class="icon">&#x1F4E1;</span><span class="label">Grandmaster</span></div>
+        <div class="big" id="v_gm">&mdash;</div>
+        <div class="sub" id="v_gm_sub">&mdash;</div>
+      </div>
+    </div>
+
+    <!-- DEVICE -->
+    <div class="card col-4">
+      <div class="card-header"><h2>Device</h2><span class="badge" id="b_dev">ESP32-P4</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F9E0;</span>
+          <span class="label">Chip<span class="hint">Dual RISC-V HP core</span></span>
+          <span class="value" id="v_chip">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x26A1;</span>
+          <span class="label">CPU Frequency</span>
+          <span class="value accent" id="v_cpufreq">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E6;</span>
+          <span class="label">Project<span class="hint" id="v_appver">app version &mdash;</span></span>
+          <span class="value" id="v_proj">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4DD;</span>
+          <span class="label">ESP-IDF</span>
+          <span class="value" id="v_idf">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6E0;&#xFE0F;</span>
+          <span class="label">Compile time</span>
+          <span class="value dim" id="v_compile">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F511;</span>
+          <span class="label">ELF SHA-256</span>
+          <span class="value dim" id="v_sha">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4BE;</span>
+          <span class="label">Flash</span>
+          <span class="value" id="v_flash">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F551;</span>
+          <span class="label">Uptime</span>
+          <span class="value ok" id="v_uptime">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- MEMORY -->
+    <div class="card col-4">
+      <div class="card-header"><h2>Memory</h2><span class="badge">internal heap</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F49A;</span>
+          <span class="label">Free heap<span class="hint">MALLOC_CAP_INTERNAL</span></span>
+          <span class="value ok" id="v_heap_free">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4C9;</span>
+          <span class="label">Min ever free<span class="hint">low-water mark since boot</span></span>
+          <span class="value warn" id="v_heap_min">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F9F1;</span>
+          <span class="label">Largest free block</span>
+          <span class="value" id="v_heap_lfb">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3DB;&#xFE0F;</span>
+          <span class="label">RETENT_RAM<span class="hint">@ 0x4FF178D0</span></span>
+          <span class="value dim" id="v_retent">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4D0;</span>
+          <span class="label">RAM regions</span>
+          <span class="value dim" id="v_ram">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F50B;</span>
+          <span class="label">RTC RAM</span>
+          <span class="value dim" id="v_rtcram">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4BD;</span>
+          <span class="label">TCM</span>
+          <span class="value dim" id="v_tcm">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x267B;&#xFE0F;</span>
+          <span class="label">Leak delta<span class="hint">since baseline</span></span>
+          <span class="value ok" id="v_leak">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- NETWORK -->
+    <div class="card col-4">
+      <div class="card-header"><h2>Network</h2><span class="badge">EMAC &middot; L2TAP</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F50C;</span>
+          <span class="label">Link status</span>
+          <span class="value" id="v_link">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3E0;</span>
+          <span class="label">Hostname<span class="hint">DHCP / DNS / mDNS identity</span></span>
+          <span class="value accent hostname" id="v_hostname">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F310;</span>
+          <span class="label">IP address<span class="hint" id="v_ip_hint">&mdash;</span></span>
+          <span class="value info" id="v_ip">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3F7;&#xFE0F;</span>
+          <span class="label">MAC address</span>
+          <span class="value dim" id="v_mac">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E1;</span>
+          <span class="label">L2TAP<span class="hint">EtherType 0x88F7</span></span>
+          <span class="value" id="v_l2tap">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4EC;</span>
+          <span class="label">PTP multicast filter</span>
+          <span class="value dim" id="v_mcast">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F501;</span>
+          <span class="label">EMAC restarts<span class="hint">RX descriptor recovery</span></span>
+          <span class="value" id="v_emac">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6AB;</span>
+          <span class="label">Promiscuous</span>
+          <span class="value dim" id="v_promisc">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6E1;&#xFE0F;</span>
+          <span class="label">Watchdog<span class="hint">heap pressure recovery</span></span>
+          <span class="value ok" id="v_wdt">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- PTP / SYNCHRONIZATION -->
+    <div class="card col-6">
+      <div class="card-header"><h2>PTP &middot; Synchronization</h2><span class="badge">ordinary clock &middot; slave only</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F465;</span>
+          <span class="label">Role<span class="hint">this device</span></span>
+          <span class="value accent" id="v_role">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F194;</span>
+          <span class="label">Our clock ID</span>
+          <span class="value dim" id="v_clockid">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F451;</span>
+          <span class="label">GM MAC<span class="hint">source of selected Announces</span></span>
+          <span class="value" id="v_gm_mac">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F194;</span>
+          <span class="label">GM clock ID</span>
+          <span class="value dim" id="v_gm_clockid">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3F7;&#xFE0F;</span>
+          <span class="label">GM clockClass<span class="hint">7 = holdover &middot; 6 = locked to PRTC</span></span>
+          <span class="value" id="v_gm_class">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3AF;</span>
+          <span class="label">GM accuracy</span>
+          <span class="value dim" id="v_gm_accuracy">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F522;</span>
+          <span class="label">GM priority1 &middot; priority2</span>
+          <span class="value" id="v_gm_prio">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x23F3;</span>
+          <span class="label">GM TAI&minus;UTC</span>
+          <span class="value" id="v_gm_utc">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F6F0;&#xFE0F;</span>
+          <span class="label">GM time source</span>
+          <span class="value dim" id="v_gm_src">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- SERVO -->
+    <div class="card col-6">
+      <div class="card-header"><h2>Servo &middot; Discipline</h2><span class="badge">freq + step &middot; linreg window 16</span></div>
+      <div class="rows">
+        <div class="row"><span class="icon">&#x1F7E2;</span>
+          <span class="label">Servo state</span>
+          <span class="value ok" id="v_servo">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3AF;</span>
+          <span class="label">Offset mean &middot; sd<span class="hint">last window</span></span>
+          <span class="value" id="v_off_stats">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x21C4;</span>
+          <span class="label">Path delay mean &middot; sd</span>
+          <span class="value" id="v_dly_stats">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x269B;&#xFE0F;</span>
+          <span class="label">Frequency adjustment</span>
+          <span class="value" id="v_freq">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4C8;</span>
+          <span class="label">Linreg slope<span class="hint">GM apparent drift vs slave PHC</span></span>
+          <span class="value" id="v_slope">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x2696;&#xFE0F;</span>
+          <span class="label">Asymmetry mean<span class="hint">(ms&rarr;sl) &minus; (sl&rarr;ms)</span></span>
+          <span class="value dim" id="v_asy">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x23F1;&#xFE0F;</span>
+          <span class="label">TC correction m&rarr;s &middot; s&rarr;m<span class="hint">switch residence-time means; 0 on direct cable</span></span>
+          <span class="value dim" id="v_corr">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4CA;</span>
+          <span class="label">Quality<span class="hint">% of window within &plusmn;100 ns</span></span>
+          <span class="value ok" id="v_qual">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F50D;</span>
+          <span class="label">PHC residual<span class="hint">long-window offset mean</span></span>
+          <span class="value dim" id="v_phc">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F198;</span>
+          <span class="label">Locked for &middot; last Sync</span>
+          <span class="value" id="v_lock_age">&mdash;</span></div>
+      </div>
+    </div>
+
+    <!-- GM DIAGNOSTICS -->
+    <div class="card col-12">
+      <div class="card-header"><h2>Grandmaster Diagnostics</h2><span class="badge" id="b_gm_diag">PTP message counters</span></div>
+      <div class="grid" style="gap:14px;">
+
+        <div class="card col-4" style="background:transparent;border:1px dashed var(--line-soft);">
+          <div class="card-header" style="padding-bottom:8px;margin-bottom:10px;">
+            <h2 style="font-size:10px;">Message Counts</h2>
+          </div>
+          <div class="rows">
+            <div class="row"><span class="icon">&#x1F4E5;</span>
+              <span class="label">Sync RX</span>
+              <span class="value" id="v_sync_rx">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F4E5;</span>
+              <span class="label">Follow_Up RX</span>
+              <span class="value" id="v_fu_rx">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F4E5;</span>
+              <span class="label">Delay_Resp RX</span>
+              <span class="value" id="v_dr_rx">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F4E2;</span>
+              <span class="label">Announce RX</span>
+              <span class="value" id="v_ann_rx">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F501;</span>
+              <span class="label">Step mode<span class="hint">two-step &middot; one-step</span></span>
+              <span class="value dim" id="v_step_mode">&mdash;</span></div>
+          </div>
+        </div>
+
+        <div class="card col-4" style="background:transparent;border:1px dashed var(--line-soft);">
+          <div class="card-header" style="padding-bottom:8px;margin-bottom:10px;">
+            <h2 style="font-size:10px;">Timing Health</h2>
+          </div>
+          <div class="rows">
+            <div class="row"><span class="icon">&#x1F4CF;</span>
+              <span class="label">Sync interval<span class="hint">spacing between Sync RX</span></span>
+              <span class="value" id="v_sync_ivl">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x23F1;&#xFE0F;</span>
+              <span class="label">Follow_Up latency<span class="hint">Sync RX &rarr; FU RX</span></span>
+              <span class="value" id="v_fu_lat">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x26A0;&#xFE0F;</span>
+              <span class="label">Sync seq gaps</span>
+              <span class="value" id="v_sync_gap">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x26A0;&#xFE0F;</span>
+              <span class="label">Announce seq gaps</span>
+              <span class="value" id="v_ann_gap">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F4A5;</span>
+              <span class="label">Post-lock spikes<span class="hint">|offset| &gt; 1&micro;s after lock</span></span>
+              <span class="value" id="v_spikes">&mdash;</span></div>
+          </div>
+        </div>
+
+        <div class="card col-4" style="background:transparent;border:1px dashed var(--line-soft);">
+          <div class="card-header" style="padding-bottom:8px;margin-bottom:10px;">
+            <h2 style="font-size:10px;">Integrity</h2>
+          </div>
+          <div class="rows">
+            <div class="row"><span class="icon">&#x1F47B;</span>
+              <span class="label">FollowUp orphans<span class="hint">FU w/o matching Sync</span></span>
+              <span class="value" id="v_fu_orph">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F47B;</span>
+              <span class="label">DelayResp orphans<span class="hint">DR w/o pending DReq</span></span>
+              <span class="value" id="v_dr_orph">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F500;</span>
+              <span class="label">GM identity changes<span class="hint">switched grandmaster</span></span>
+              <span class="value" id="v_gm_chg">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F39A;&#xFE0F;</span>
+              <span class="label">GM class transitions<span class="hint">e.g. 6 &rarr; 7 (holdover)</span></span>
+              <span class="value" id="v_class_chg">&mdash;</span></div>
+            <div class="row"><span class="icon">&#x1F50A;</span>
+              <span class="label">LED heartbeat<span class="hint">Sync RX pulse count</span></span>
+              <span class="value dim" id="v_pulse_seq">&mdash;</span></div>
+          </div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- TASKS -->
+    <div class="card col-12">
+      <div class="card-header"><h2>FreeRTOS Tasks</h2><span class="badge" id="b_tasks">&mdash; tasks</span></div>
+      <table class="tasks">
+        <thead>
+          <tr>
+            <th style="width:24%">Task</th>
+            <th style="width:10%">Priority</th>
+            <th style="width:14%">Stack</th>
+            <th style="width:18%">High-water mark</th>
+            <th style="width:10%">Core</th>
+            <th>Role</th>
+          </tr>
+        </thead>
+        <tbody id="tasksBody">
+          <tr><td colspan="6" style="text-align:center; color:var(--text-mute); padding:20px;">awaiting data&hellip;</td></tr>
+        </tbody>
+      </table>
+    </div>
+
+  </div>
+
+  <footer>
+    Last refresh <span class="live" id="lastRefresh">&mdash;</span>
+    <span class="sep">&middot;</span> auto-refresh every 5000 ms
+    <span class="sep">&middot;</span>
+    <a href="https://github.com/Montecri/GNSSTimeServer" target="_blank" rel="noopener">github.com/Montecri/GNSSTimeServer</a>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+/* ─── Icon map for known FreeRTOS task names (slave set) ─── */
+const TASK_META = {
+  "ptp_rx":         { icon:"\u{1F4E5}", role:"L2TAP RX, hw timestamps, slave SM" },
+  "delay_req":      { icon:"\u{1F4E4}", role:"Delay_Req emitter (queued)" },
+  "gm_diag":        { icon:"\u{1F50D}", role:"GM quality diagnostics report" },
+  "slave_led_watch":{ icon:"\u{1F441}\uFE0F", role:"LED state vs Sync arrival" },
+  "pps_led":        { icon:"\u{1F4A1}", role:"Sync-RX heartbeat indicator" },
+  "led":            { icon:"\u{1F506}", role:"Status LED state machine" },
+  "display":        { icon:"\u{1F4FA}", role:"SH1106 OLED \u00B7 3 screens" },
+  "btn":            { icon:"\u{1F518}", role:"Display button \u00B7 GPIO 1" },
+  "dhcp_fb":        { icon:"\u{1F310}", role:"DHCP fallback \u00B7 15 s timeout" },
+  "heap_mon":       { icon:"\u{1F4CA}", role:"Heap watchdog \u00B7 60 s interval" },
+  "wdt":            { icon:"\u{1F415}", role:"Watchdog \u00B7 EMAC restart logic" },
+  "main":           { icon:"\u{1F3E1}", role:"Init & supervision (idle)" }
+};
+
+/* ─── Helpers ─── */
+const $ = (id) => document.getElementById(id);
+const fmtKB = (b) => (b/1024).toFixed(0) + " KB";
+
+function setText(id, val) {
+  const el = $(id);
+  if (!el) return;
+  if (el.textContent !== String(val)) {
+    el.textContent = val;
+  }
+}
+
+function formatUptime(s) {
+  if (typeof s !== "number" || s < 0) return "\u2014";
+  const d = Math.floor(s / 86400);
+  const h = Math.floor((s % 86400) / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  const sec = s % 60;
+  const pad = (n) => String(n).padStart(2, "0");
+  if (d > 0) return d + "d " + pad(h) + "h" + pad(m) + "m";
+  return pad(h) + ":" + pad(m) + ":" + pad(sec);
+}
+
+/* Format ns/µs/ms based on magnitude */
+function fmtNs(ns) {
+  if (typeof ns !== "number") return "\u2014";
+  const sign = ns >= 0 ? "+" : "";
+  const a = Math.abs(ns);
+  if (a < 10000) return sign + ns + " ns";
+  if (a < 10000000) return sign + (ns/1000).toFixed(1) + " \u00B5s";
+  return sign + (ns/1000000).toFixed(2) + " ms";
+}
+
+/* Format µs with smart unit promotion (used for sync intervals) */
+function fmtUs(us) {
+  if (typeof us !== "number") return "\u2014";
+  const a = Math.abs(us);
+  if (a < 10000) return us + " \u00B5s";
+  return (us / 1000).toFixed(1) + " ms";
+}
+
+function prioClass(p) {
+  if (p >= 7) return "prio p7";
+  if (p === 6) return "prio p6";
+  if (p === 5) return "prio p5";
+  if (p === 2) return "prio p2";
+  return "prio p1";
+}
+
+/* Severity styling helper for "gap" / "orphan" / "spike" counters: they
+ * should be green at 0, info at small counts, warn/err if growing. */
+function counterClass(n, warn_at, err_at) {
+  if (n == null) return "value dim";
+  if (n === 0) return "value ok";
+  if (n >= err_at) return "value err";
+  if (n >= warn_at) return "value warn";
+  return "value info";
+}
+
+/* ─── Main render ─── */
+function render(d) {
+  /* Header status pill */
+  const pill = $("hdrStatus");
+  const stateUp = (d.servo_state || "").toUpperCase();
+  if (stateUp === "LOCKED") pill.className = "status-pill";
+  else if (stateUp === "HOLDOVER" || stateUp === "ACQUIRING") pill.className = "status-pill warn";
+  else pill.className = "status-pill err";
+  setText("hdrStatusText", "SLAVE " + (stateUp || "?"));
+
+  /* Hero — Sync state */
+  const mState = $("m_state");
+  mState.className = "metric";
+  if (stateUp === "LOCKED") mState.classList.add("locked");
+  else if (stateUp === "HOLDOVER") mState.classList.add("holdover");
+  else if (stateUp === "FAULT") mState.classList.add("fault");
+  else if (stateUp === "NO_LINK" || stateUp === "NO LINK") mState.classList.add("no-link");
+  setText("v_state", stateUp || "\u2014");
+  setText("v_state_sub", d.locked_for ? ("held " + d.locked_for) : "awaiting first Sync");
+
+  /* Hero — Offset to GM */
+  if (typeof d.offset_ns === "number" && (stateUp === "LOCKED" || stateUp === "HOLDOVER")) {
+    const sign = d.offset_ns >= 0 ? "+" : "";
+    $("v_offset").innerHTML = sign + d.offset_ns + ' <span class="unit">ns</span>';
+  } else {
+    setText("v_offset", "\u2014");
+  }
+  if (typeof d.offset_mean_ns === "number" && typeof d.offset_sd_ns === "number") {
+    setText("v_offset_sub", "mean " + fmtNs(d.offset_mean_ns) + " sd " + Math.round(d.offset_sd_ns) + " ns");
+  } else {
+    setText("v_offset_sub", "live PTP offset");
+  }
+
+  /* Hero — Path delay */
+  if (typeof d.path_delay_ns === "number" && d.path_delay_ns > 0) {
+    $("v_pathdelay").innerHTML = d.path_delay_ns + ' <span class="unit">ns</span>';
+  } else {
+    setText("v_pathdelay", "\u2014");
+  }
+  if (typeof d.delay_mean_ns === "number" && typeof d.delay_sd_ns === "number") {
+    setText("v_pathdelay_sub", "mean " + Math.round(d.delay_mean_ns) + " ns sd " + Math.round(d.delay_sd_ns));
+  } else {
+    setText("v_pathdelay_sub", "one-way");
+  }
+
+  /* Hero — Grandmaster */
+  if (d.gm_mac && d.gm_mac !== "00:00:00:00:00:00") {
+    /* Show short form: last 4 bytes */
+    const parts = d.gm_mac.split(":");
+    if (parts.length === 6) {
+      setText("v_gm", "..\u200B" + parts.slice(2).join(":"));
+    } else {
+      setText("v_gm", d.gm_mac);
+    }
+    $("v_gm").style.color = "var(--text)";
+  } else {
+    setText("v_gm", "NO GM");
+    $("v_gm").style.color = "var(--err)";
+  }
+  if (typeof d.gm_class === "number") {
+    setText("v_gm_sub", "class " + d.gm_class + " \u00B7 " + (d.sync_rx_count || 0).toLocaleString() + " Sync RX");
+  } else {
+    setText("v_gm_sub", "no Announce yet");
+  }
+
+  /* Device */
+  setText("v_chip", (d.chip || "ESP32-P4") + " rev " + (d.chip_rev || "v1.0"));
+  setText("b_dev", (d.chip || "ESP32-P4") + " \u00B7 rev " + (d.chip_rev || "v1.0"));
+  setText("v_cpufreq", (d.cpu_mhz || 0) + " MHz");
+  setText("v_proj", d.project || "\u2014");
+  setText("v_appver", "app version " + (d.app_version || "\u2014"));
+  setText("hdr_fw", "fw " + (d.app_version || "\u2014"));
+  setText("v_idf", d.idf_version || "\u2014");
+  setText("v_compile", d.compile_time || "\u2014");
+  setText("v_sha", (d.elf_sha || "").substring(0,9) + "\u2026");
+  setText("v_flash", (d.flash_mb || 16) + " MB \u00B7 " + (d.flash_mode || "DIO") + " \u00B7 " + (d.flash_mhz || 80) + " MHz");
+  setText("v_uptime", formatUptime(d.uptime_s || 0));
+
+  /* Memory */
+  setText("v_heap_free", fmtKB(d.heap_free || 0));
+  setText("v_heap_min",  fmtKB(d.heap_min  || 0));
+  setText("v_heap_lfb",  fmtKB(d.heap_lfb  || 0));
+  setText("v_retent",    (d.retent_kb || 141) + " KiB");
+  setText("v_ram",       (d.ram1_kb || 384) + " + " + (d.ram2_kb || 18) + " KiB");
+  setText("v_rtcram",    (d.rtc_kb || 31) + " KiB");
+  setText("v_tcm",       (d.tcm_kb || 7) + " KiB");
+  if (typeof d.heap_leak === "number") {
+    const lv = $("v_leak");
+    const sign = d.heap_leak >= 0 ? "+" : "";
+    setText("v_leak", sign + d.heap_leak + " B");
+    lv.className = "value " + (Math.abs(d.heap_leak) > 1024 ? "warn" : "ok");
+  }
+
+  /* Network */
+  const linkUp = !!d.link_up;
+  $("v_link").innerHTML = linkUp ? '<span class="chip ok">UP</span>' : '<span class="chip err">DOWN</span>';
+  setText("v_hostname", d.hostname || "\u2014");
+  if (d.hostname) document.title = d.hostname + " \u2014 PTP Slave";
+  setText("v_ip", d.ip || "(no IP)");
+  setText("v_ip_hint", d.ip_source ? d.ip_source : "DHCP/static");
+  setText("v_mac", d.mac || "\u2014");
+  $("v_l2tap").innerHTML = d.l2tap_ready ? '<span class="chip ok">READY</span>' : '<span class="chip err">NOT READY</span>';
+  setText("v_mcast", "01:1B:19:00:00:00");
+  const emacV = $("v_emac");
+  setText("v_emac", d.emac_restarts != null ? d.emac_restarts : "\u2014");
+  emacV.className = "value " + ((d.emac_restarts || 0) === 0 ? "ok" : (d.emac_restarts > 5 ? "err" : "warn"));
+  setText("v_promisc", d.promiscuous ? "enabled" : "disabled");
+  setText("v_wdt", d.wdt_healthy ? "healthy" : "alerting");
+  $("v_wdt").className = "value " + (d.wdt_healthy ? "ok" : "err");
+
+  /* PTP / Synchronization */
+  setText("v_role", d.role || "\u2014");
+  setText("v_clockid", d.clock_id || "\u2014");
+  setText("v_gm_mac", d.gm_mac || "\u2014");
+  setText("v_gm_clockid", d.gm_clock_id || "\u2014");
+  if (typeof d.gm_class === "number") {
+    let cls = "value";
+    if (d.gm_class === 6) cls = "value ok";        /* locked to primary reference */
+    else if (d.gm_class === 7) cls = "value warn"; /* in holdover */
+    else if (d.gm_class >= 13 && d.gm_class <= 14) cls = "value info"; /* alternate */
+    $("v_gm_class").textContent = d.gm_class;
+    $("v_gm_class").className = cls;
+  } else {
+    setText("v_gm_class", "\u2014");
+  }
+  setText("v_gm_accuracy", typeof d.gm_accuracy === "number" ? ("0x" + d.gm_accuracy.toString(16).toUpperCase().padStart(2,"0")) : "\u2014");
+  setText("v_gm_prio", (typeof d.gm_priority1 === "number" ? d.gm_priority1 : "?") + " \u00B7 " +
+                       (typeof d.gm_priority2 === "number" ? d.gm_priority2 : "?"));
+  setText("v_gm_utc", typeof d.gm_utc_offset === "number" ? ((d.gm_utc_offset >= 0 ? "+" : "") + d.gm_utc_offset + " s") : "\u2014");
+  setText("v_gm_src", typeof d.gm_time_source === "number" ? ("0x" + d.gm_time_source.toString(16).toUpperCase().padStart(2,"0")) : "\u2014");
+
+  /* Servo */
+  setText("v_servo", stateUp);
+  const sv = $("v_servo");
+  sv.className = "value " + (stateUp === "LOCKED" ? "ok" :
+                              stateUp === "HOLDOVER" ? "warn" :
+                              stateUp === "FAULT" || stateUp === "NO_LINK" ? "err" : "");
+  if (typeof d.offset_mean_ns === "number" && typeof d.offset_sd_ns === "number" && d.offset_window > 0) {
+    setText("v_off_stats", fmtNs(d.offset_mean_ns) + " \u00B1 " + Math.round(d.offset_sd_ns) + " ns (n=" + d.offset_window + ")");
+  } else {
+    setText("v_off_stats", "\u2014");
+  }
+  if (typeof d.delay_mean_ns === "number" && typeof d.delay_sd_ns === "number" && d.delay_window > 0) {
+    setText("v_dly_stats", Math.round(d.delay_mean_ns) + " \u00B1 " + Math.round(d.delay_sd_ns) + " ns (n=" + d.delay_window + ")");
+  } else {
+    setText("v_dly_stats", "\u2014");
+  }
+  if (typeof d.freq_ppb === "number") {
+    const sign = d.freq_ppb >= 0 ? "+" : "";
+    setText("v_freq", sign + d.freq_ppb.toFixed(1) + " ppb");
+  } else {
+    setText("v_freq", "\u2014");
+  }
+  if (typeof d.linreg_slope_ppb === "number") {
+    const sign = d.linreg_slope_ppb >= 0 ? "+" : "";
+    setText("v_slope", sign + d.linreg_slope_ppb.toFixed(1) + " ppb");
+  } else {
+    setText("v_slope", "\u2014");
+  }
+  if (typeof d.asymmetry_ns === "number" && d.asymmetry_n > 0) {
+    const sign = d.asymmetry_ns >= 0 ? "+" : "";
+    setText("v_asy", sign + d.asymmetry_ns + " ns (n=" + d.asymmetry_n + ")");
+  } else {
+    setText("v_asy", "\u2014");
+  }
+  if (typeof d.corr_m2s_ns === "number" && typeof d.corr_s2m_ns === "number" && d.asymmetry_n > 0) {
+    /* fmtNs auto-scales ns -> \u00B5s -> ms, same rule as the other rows */
+    setText("v_corr", fmtNs(d.corr_m2s_ns) + " \u00B7 " + fmtNs(d.corr_s2m_ns));
+  } else {
+    setText("v_corr", "\u2014");
+  }
+  if (typeof d.quality_pct === "number") {
+    setText("v_qual", d.quality_pct + "%");
+    $("v_qual").className = "value " + (d.quality_pct >= 80 ? "ok" : d.quality_pct >= 50 ? "warn" : "err");
+  } else {
+    setText("v_qual", "\u2014");
+  }
+  setText("v_phc", d.phc_residual_ns != null ? ((d.phc_residual_ns >= 0 ? "+" : "") + d.phc_residual_ns + " ns") : "\u2014");
+  if (d.locked_for && d.locked_for !== "00:00:00") {
+    let txt = "locked " + d.locked_for;
+    if (typeof d.last_sync_age_ms === "number") {
+      txt += " \u00B7 sync " + (d.last_sync_age_ms / 1000).toFixed(1) + "s ago";
+    }
+    setText("v_lock_age", txt);
+  } else if (typeof d.last_sync_age_ms === "number") {
+    setText("v_lock_age", "sync " + (d.last_sync_age_ms / 1000).toFixed(1) + "s ago");
+  } else {
+    setText("v_lock_age", "\u2014");
+  }
+
+  /* GM Diagnostics — counters */
+  setText("v_sync_rx", (d.sync_rx_count != null ? d.sync_rx_count.toLocaleString() : "\u2014"));
+  setText("v_fu_rx",   (d.followup_rx_count != null ? d.followup_rx_count.toLocaleString() : "\u2014"));
+  setText("v_dr_rx",   (d.delay_resp_rx_count != null ? d.delay_resp_rx_count.toLocaleString() : "\u2014"));
+  setText("v_ann_rx",  (d.announce_rx_count != null ? d.announce_rx_count.toLocaleString() : "\u2014"));
+  /* Step mode badge */
+  let mode = "?";
+  if (typeof d.two_step_count === "number" && typeof d.one_step_count === "number") {
+    if (d.two_step_count > 0 && d.one_step_count === 0)      mode = "two-step";
+    else if (d.one_step_count > 0 && d.two_step_count === 0) mode = "one-step";
+    else if (d.two_step_count > 0 && d.one_step_count > 0)   mode = "mixed";
+    else                                                       mode = "none";
+  }
+  setText("v_step_mode", mode);
+
+  /* Timing health */
+  if (typeof d.sync_ivl_mean_us === "number" && d.sync_ivl_window > 0) {
+    setText("v_sync_ivl", fmtUs(d.sync_ivl_mean_us) + " (n=" + d.sync_ivl_window + ")");
+  } else {
+    setText("v_sync_ivl", "\u2014");
+  }
+  if (typeof d.fu_latency_mean_us === "number" && d.fu_latency_window > 0) {
+    setText("v_fu_lat", fmtUs(d.fu_latency_mean_us) + " (n=" + d.fu_latency_window + ")");
+  } else {
+    setText("v_fu_lat", "\u2014");
+  }
+  setText("v_sync_gap", d.sync_seq_gaps != null ? d.sync_seq_gaps : "\u2014");
+  $("v_sync_gap").className = counterClass(d.sync_seq_gaps, 1, 10);
+  setText("v_ann_gap", d.announce_seq_gaps != null ? d.announce_seq_gaps : "\u2014");
+  $("v_ann_gap").className = counterClass(d.announce_seq_gaps, 1, 10);
+  setText("v_spikes", d.post_lock_spikes != null ? d.post_lock_spikes : "\u2014");
+  $("v_spikes").className = counterClass(d.post_lock_spikes, 1, 20);
+
+  /* Integrity */
+  setText("v_fu_orph", d.followup_orphans != null ? d.followup_orphans : "\u2014");
+  $("v_fu_orph").className = counterClass(d.followup_orphans, 1, 10);
+  setText("v_dr_orph", d.delay_resp_orphans != null ? d.delay_resp_orphans : "\u2014");
+  $("v_dr_orph").className = counterClass(d.delay_resp_orphans, 1, 10);
+  setText("v_gm_chg", d.gm_identity_changes != null ? d.gm_identity_changes : "\u2014");
+  $("v_gm_chg").className = counterClass(d.gm_identity_changes, 1, 5);
+  setText("v_class_chg", d.gm_class_transitions != null ? d.gm_class_transitions : "\u2014");
+  $("v_class_chg").className = counterClass(d.gm_class_transitions, 1, 5);
+  setText("v_pulse_seq", d.sync_pulse_seq != null ? d.sync_pulse_seq.toLocaleString() : "\u2014");
+
+  /* Tasks */
+  if (Array.isArray(d.tasks)) {
+    const body = $("tasksBody");
+    setText("b_tasks", d.tasks.length + " active \u00B7 multicore");
+    body.innerHTML = d.tasks.map(t => {
+      const meta = TASK_META[t.name] || { icon: "\u{1F539}", role: "\u2014" };
+      const used = (t.stack_bytes && t.hwm_bytes != null)
+                 ? Math.round(100 * (1 - t.hwm_bytes / t.stack_bytes))
+                 : 0;
+      const usedBytes = (t.stack_bytes != null && t.hwm_bytes != null)
+                      ? (t.stack_bytes - t.hwm_bytes)
+                      : 0;
+      const usedDisp = usedBytes >= 1024
+                     ? (usedBytes/1024).toFixed(1) + " KB"
+                     : usedBytes + " B";
+      return ""
+        + "<tr>"
+        + '<td><span class="tname"><span class="icon">' + meta.icon + "</span>" + t.name + "</span></td>"
+        + '<td><span class="' + prioClass(t.priority) + '">' + t.priority + "</span></td>"
+        + "<td>" + (t.stack_bytes != null ? t.stack_bytes + " B" : "\u2014") + "</td>"
+        + '<td><span class="bar"><i style="width:' + used + '%"></i></span>' + usedDisp + "</td>"
+        + "<td>" + (t.core != null ? t.core : "\u2014") + "</td>"
+        + "<td>" + meta.role + "</td>"
+        + "</tr>";
+    }).join("");
+  }
+
+  /* Footer timestamp */
+  const now = new Date();
+  const pad = (n) => String(n).padStart(2, "0");
+  setText("lastRefresh", pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + ":" + pad(now.getUTCSeconds()) + " UTC");
+}
+
+/* ─── Polling ─── */
+async function poll() {
+  try {
+    const r = await fetch("/api/status", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+    render(d);
+  } catch (err) {
+    const pill = $("hdrStatus");
+    pill.className = "status-pill err";
+    setText("hdrStatusText", "CONN LOST");
+    console.warn("poll failed:", err);
+  }
+}
+
+poll();
+setInterval(poll, 5000);
+</script>
+</body>
+</html>
