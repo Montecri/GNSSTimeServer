@@ -1,0 +1,656 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>OTA Update &mdash; ESP32-P4 PTP Slave</title>
+<style>
+  :root {
+    --bg-0:#0b1018; --bg-1:#121a26; --bg-2:#1a2536; --bg-3:#233047;
+    --line:#2a3a55; --line-soft:#1f2c42;
+    --text:#e6edf7; --text-dim:#8fa1bf; --text-mute:#5a6c8a;
+    --accent:#7aa2f7; --accent-2:#bd93f9;
+    --ok:#50fa7b; --warn:#ffb86c; --err:#ff5577;
+    --info:#8be9fd; --purple:#bd93f9; --gold:#f1c40f;
+    --grid-glow:rgba(122,162,247,0.08);
+    --mono:ui-monospace,"SF Mono","JetBrains Mono","Cascadia Code",Consolas,"Courier New",monospace;
+    --sans:-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+    --emoji:"Apple Color Emoji","Segoe UI Emoji","Noto Color Emoji","Segoe UI Symbol",sans-serif;
+  }
+  * { box-sizing:border-box; }
+  html,body { margin:0; padding:0; background:var(--bg-0); color:var(--text); font-family:var(--sans); -webkit-font-smoothing:antialiased; min-height:100vh; }
+  body {
+    background:
+      radial-gradient(circle at 15% 0%, rgba(122,162,247,0.06) 0%, transparent 40%),
+      radial-gradient(circle at 85% 100%, rgba(189,147,249,0.05) 0%, transparent 40%),
+      linear-gradient(180deg,var(--bg-0) 0%,#060a12 100%);
+    background-attachment:fixed;
+  }
+  body::before {
+    content:""; position:fixed; inset:0;
+    background-image:
+      linear-gradient(var(--grid-glow) 1px,transparent 1px),
+      linear-gradient(90deg,var(--grid-glow) 1px,transparent 1px);
+    background-size:48px 48px; pointer-events:none; z-index:0; opacity:0.4;
+  }
+  .container { position:relative; z-index:1; max-width:760px; margin:0 auto; padding:28px 24px 48px; }
+
+  header { display:flex; align-items:center; justify-content:space-between; gap:16px;
+           padding-bottom:20px; border-bottom:1px solid var(--line-soft); margin-bottom:24px; flex-wrap:wrap; }
+  .brand { display:flex; align-items:center; gap:14px; }
+  .brand .mark { width:44px; height:44px; border-radius:10px;
+                 background:linear-gradient(135deg,var(--warn) 0%,var(--err) 100%);
+                 display:flex; align-items:center; justify-content:center;
+                 font-size:22px;
+                 box-shadow:0 0 24px rgba(255,184,108,0.3); }
+  .brand h1 { margin:0; font-size:20px; font-weight:600; letter-spacing:0.2px; }
+  .brand .sub { margin:2px 0 0; font-family:var(--mono); font-size:11px; color:var(--text-dim); letter-spacing:0.5px; }
+
+  .back { font-family:var(--mono); font-size:12px; color:var(--text-dim); text-decoration:none;
+          padding:8px 14px; border-radius:999px; border:1px solid var(--line-soft); transition:all 0.2s ease; }
+  .back:hover { color:var(--accent); border-color:var(--accent); }
+
+  .card { background:linear-gradient(180deg,var(--bg-1) 0%,var(--bg-2) 100%);
+          border:1px solid var(--line-soft); border-radius:14px; padding:24px;
+          position:relative; overflow:hidden; margin-bottom:18px; }
+  .card::before { content:""; position:absolute; top:0; left:0; right:0; height:1px;
+                  background:linear-gradient(90deg,transparent,var(--line),transparent); }
+  .card-header { display:flex; align-items:center; justify-content:space-between;
+                 margin-bottom:18px; padding-bottom:12px; border-bottom:1px dashed var(--line-soft); }
+  .card-header h2 { margin:0; font-size:11px; font-weight:700; letter-spacing:2px;
+                    text-transform:uppercase; color:var(--text-dim); }
+  .card-header .badge { font-family:var(--mono); font-size:10px; color:var(--text-mute); letter-spacing:0.5px; }
+
+  /* Partition info rows */
+  .rows { display:flex; flex-direction:column; gap:2px; }
+  .row { display:grid; grid-template-columns:28px 1fr auto; align-items:center; gap:12px;
+         padding:9px 4px; }
+  .row + .row { border-top:1px solid var(--line-soft); }
+  .row .icon { font-family:var(--emoji); font-size:18px; line-height:1;
+               text-align:center; width:28px; display:inline-flex;
+               align-items:center; justify-content:center; }
+  .row .label { font-size:13px; color:var(--text); font-weight:500; }
+  .row .label .hint { display:block; font-family:var(--mono); font-size:10px;
+                      color:var(--text-mute); font-weight:400; margin-top:2px; }
+  .row .value { font-family:var(--mono); font-size:12.5px; color:var(--text);
+                text-align:right; font-variant-numeric:tabular-nums; }
+  .row .value.dim   { color:var(--text-dim); }
+  .row .value.ok    { color:var(--ok); }
+  .row .value.warn  { color:var(--warn); }
+  .row .value.accent{ color:var(--accent); }
+
+  /* Auth inputs (Basic Auth for POST /api/ota) */
+  .auth-row {
+    display:flex;
+    gap:10px;
+    margin-bottom:18px;
+    flex-wrap:wrap;
+  }
+  .auth-row label {
+    flex:1;
+    min-width:140px;
+    display:flex;
+    flex-direction:column;
+    gap:6px;
+  }
+  .auth-row .auth-label {
+    font-family:var(--mono);
+    font-size:10px;
+    color:var(--text-dim);
+    letter-spacing:1.5px;
+    text-transform:uppercase;
+  }
+  .auth-row input {
+    padding:10px 12px;
+    background:var(--bg-2);
+    color:var(--text);
+    border:1px solid var(--line);
+    border-radius:8px;
+    font-family:var(--mono);
+    font-size:13px;
+    transition:all 0.2s ease;
+  }
+  .auth-row input:focus {
+    outline:none;
+    border-color:var(--accent);
+    box-shadow:0 0 0 3px rgba(122,162,247,0.1);
+  }
+
+  /* File picker */
+  .drop-zone {
+    display:block;
+    border:2px dashed var(--line);
+    border-radius:12px;
+    padding:36px 24px;
+    text-align:center;
+    transition:all 0.2s ease;
+    cursor:pointer;
+    background:rgba(255,255,255,0.01);
+  }
+  .drop-zone:hover, .drop-zone.dragover {
+    border-color:var(--accent);
+    background:rgba(122,162,247,0.04);
+  }
+  .drop-zone .icon-big {
+    font-family:var(--emoji);
+    font-size:42px;
+    display:block;
+    margin-bottom:12px;
+  }
+  .drop-zone .primary {
+    font-size:15px;
+    font-weight:600;
+    color:var(--text);
+    margin-bottom:6px;
+  }
+  .drop-zone .secondary {
+    font-family:var(--mono);
+    font-size:11px;
+    color:var(--text-mute);
+    letter-spacing:0.3px;
+  }
+  .drop-zone.has-file {
+    border-color:var(--accent);
+    border-style:solid;
+    background:rgba(122,162,247,0.06);
+  }
+  .drop-zone.has-file .icon-big { content:none; }
+  .file-info {
+    font-family:var(--mono);
+    color:var(--accent);
+    font-size:13px;
+    margin-top:8px;
+  }
+  .file-info .name { color:var(--text); }
+  .file-info .size { color:var(--text-dim); font-size:11px; }
+
+  input[type=file] { display:none; }
+
+  /* Buttons */
+  .btn-row { display:flex; gap:12px; margin-top:18px; }
+  .btn {
+    flex:1;
+    padding:12px 18px;
+    border-radius:10px;
+    border:1px solid var(--line);
+    background:var(--bg-3);
+    color:var(--text);
+    font-family:var(--sans);
+    font-size:14px;
+    font-weight:600;
+    letter-spacing:0.3px;
+    cursor:pointer;
+    transition:all 0.2s ease;
+    display:inline-flex; align-items:center; justify-content:center; gap:8px;
+  }
+  .btn:hover:not(:disabled) { transform:translateY(-1px); border-color:var(--accent); }
+  .btn:disabled { opacity:0.4; cursor:not-allowed; }
+  .btn.primary {
+    background:linear-gradient(135deg,var(--accent) 0%,var(--accent-2) 100%);
+    color:var(--bg-0);
+    border-color:transparent;
+    box-shadow:0 4px 16px rgba(122,162,247,0.2);
+  }
+  .btn.primary:hover:not(:disabled) {
+    box-shadow:0 6px 20px rgba(122,162,247,0.35);
+  }
+  .btn.danger {
+    background:rgba(255,85,119,0.08);
+    border-color:rgba(255,85,119,0.3);
+    color:var(--err);
+  }
+  .btn.danger:hover:not(:disabled) { background:rgba(255,85,119,0.15); }
+
+  /* Progress */
+  .progress-wrap {
+    display:none;
+    margin-top:20px;
+    padding:18px;
+    background:rgba(0,0,0,0.2);
+    border-radius:10px;
+    border:1px solid var(--line-soft);
+  }
+  .progress-wrap.visible { display:block; }
+  .progress-label {
+    display:flex; justify-content:space-between; align-items:center;
+    font-family:var(--mono); font-size:12px; margin-bottom:10px;
+  }
+  .progress-label .stage { color:var(--accent); letter-spacing:1px; }
+  .progress-label .pct { color:var(--text); font-weight:700; }
+  .progress-bar {
+    height:8px; background:var(--bg-3); border-radius:99px; overflow:hidden; position:relative;
+  }
+  .progress-bar > i {
+    display:block; height:100%; width:0%;
+    background:linear-gradient(90deg,var(--accent),var(--accent-2));
+    border-radius:99px;
+    transition:width 0.2s ease;
+  }
+  .progress-meta {
+    margin-top:10px;
+    display:flex; justify-content:space-between;
+    font-family:var(--mono); font-size:10px; color:var(--text-mute);
+    letter-spacing:0.5px;
+  }
+
+  /* Status callouts */
+  .alert {
+    margin-top:16px;
+    padding:12px 16px;
+    border-radius:8px;
+    font-size:13px;
+    line-height:1.5;
+    display:flex; align-items:flex-start; gap:10px;
+  }
+  .alert .icon { font-family:var(--emoji); font-size:18px; flex-shrink:0; }
+  .alert.info { background:rgba(139,233,253,0.06); border:1px solid rgba(139,233,253,0.2); color:var(--info); }
+  .alert.warn { background:rgba(255,184,108,0.06); border:1px solid rgba(255,184,108,0.2); color:var(--warn); }
+  .alert.err  { background:rgba(255,85,119,0.06); border:1px solid rgba(255,85,119,0.2); color:var(--err); }
+  .alert.ok   { background:rgba(80,250,123,0.06); border:1px solid rgba(80,250,123,0.2); color:var(--ok); }
+  .alert .body { flex:1; }
+  .alert .body strong { display:block; margin-bottom:2px; font-weight:700; }
+
+  /* Footer */
+  footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line-soft);
+           text-align:center; font-family:var(--mono); font-size:10.5px;
+           color:var(--text-mute); letter-spacing:1px; }
+  footer a { color:var(--accent); text-decoration:none; border-bottom:1px dashed transparent; }
+  footer a:hover { border-bottom-color:var(--accent); }
+  footer .sep { margin:0 8px; color:var(--text-mute); opacity:0.5; }
+</style>
+</head>
+<body>
+<div class="container">
+
+  <header>
+    <div class="brand">
+      <div class="mark">&#x1F4E1;</div>
+      <div>
+        <h1>Firmware Update (OTA)</h1>
+        <div class="sub">ESP32-P4 PTP Slave &middot; over-the-air image upload</div>
+      </div>
+    </div>
+    <a class="back" href="/">&larr; Status page</a>
+  </header>
+
+  <!-- Current firmware -->
+  <div class="card">
+    <div class="card-header">
+      <h2>Current Firmware</h2>
+      <span class="badge" id="b_ota">checking&hellip;</span>
+    </div>
+    <div class="rows">
+      <div class="row">
+        <span class="icon">&#x1F4E6;</span>
+        <span class="label">Project<span class="hint" id="i_compile">&mdash;</span></span>
+        <span class="value" id="i_project">&mdash;</span>
+      </div>
+      <div class="row">
+        <span class="icon">&#x1F3F7;&#xFE0F;</span>
+        <span class="label">Version</span>
+        <span class="value accent" id="i_version">&mdash;</span>
+      </div>
+      <div class="row">
+        <span class="icon">&#x1F4BE;</span>
+        <span class="label">Running partition<span class="hint" id="i_run_addr">&mdash;</span></span>
+        <span class="value" id="i_run_label">&mdash;</span>
+      </div>
+      <div class="row">
+        <span class="icon">&#x1F501;</span>
+        <span class="label">Next update slot<span class="hint" id="i_next_addr">&mdash;</span></span>
+        <span class="value" id="i_next_label">&mdash;</span>
+      </div>
+      <div class="row">
+        <span class="icon">&#x1F4D0;</span>
+        <span class="label">Slot capacity</span>
+        <span class="value dim" id="i_next_size">&mdash;</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Upload card -->
+  <div class="card" id="uploadCard">
+    <div class="card-header">
+      <h2>Upload New Image</h2>
+      <span class="badge">.bin file from <code>idf.py build</code></span>
+    </div>
+
+    <!-- Basic Auth credentials. These are sent as Authorization: Basic <base64>
+         on the upload POST. Must match the user:password whose Base64 is
+         compiled into OTA_BASIC_AUTH_B64 (ota_credentials.h on the device). -->
+    <div class="auth-row">
+      <label>
+        <span class="auth-label">Username</span>
+        <input id="otaUser" type="text" autocomplete="username" value="admin">
+      </label>
+      <label>
+        <span class="auth-label">Password</span>
+        <input id="otaPass" type="password" autocomplete="current-password" placeholder="set in ota_credentials.h">
+      </label>
+    </div>
+
+    <label class="drop-zone" id="dropZone" for="fileInput">
+      <span class="icon-big">&#x1F4E5;</span>
+      <div class="primary" id="dropPrimary">Click to choose firmware or drop here</div>
+      <div class="secondary" id="dropSecondary">expects: build/PTP_Slave.bin (typically 600 KB &ndash; 3 MB)</div>
+      <div class="file-info" id="fileInfo" style="display:none;">
+        <div class="name" id="fileName"></div>
+        <div class="size" id="fileSize"></div>
+      </div>
+      <input type="file" id="fileInput" accept=".bin,application/octet-stream">
+    </label>
+
+    <div class="btn-row">
+      <button class="btn danger" id="clearBtn" disabled>Clear</button>
+      <button class="btn primary" id="uploadBtn" disabled>
+        <span>&#x1F680;</span><span>Upload &amp; Flash</span>
+      </button>
+    </div>
+
+    <div class="progress-wrap" id="progressWrap">
+      <div class="progress-label">
+        <span class="stage" id="progStage">UPLOADING</span>
+        <span class="pct" id="progPct">0%</span>
+      </div>
+      <div class="progress-bar"><i id="progBar"></i></div>
+      <div class="progress-meta">
+        <span id="progBytes">0 / 0 B</span>
+        <span id="progSpeed">&mdash;</span>
+      </div>
+    </div>
+
+    <div id="alertSlot"></div>
+  </div>
+
+  <!-- Warning -->
+  <div class="alert warn">
+    <span class="icon">&#x26A0;&#xFE0F;</span>
+    <div class="body">
+      <strong>Heads up</strong>
+      Uploading a new firmware image will reboot the slave once flashing completes.
+      The PTP slave will briefly drop its lock during the ~3 s reboot window and
+      then re-acquire from the grandmaster automatically. Make sure the .bin file
+      targets <code>esp32p4</code> &mdash; a wrong-target image will be rejected at
+      validation.
+    </div>
+  </div>
+
+  <footer>
+    <a href="https://github.com/Montecri/GNSSTimeServer" target="_blank" rel="noopener">github.com/Montecri/GNSSTimeServer</a>
+  </footer>
+</div>
+
+<script>
+"use strict";
+
+const $ = (id) => document.getElementById(id);
+
+let selectedFile = null;
+let uploadXHR    = null;
+
+/* ─── Load partition info on page load ─── */
+async function loadInfo() {
+  try {
+    const r = await fetch("/api/ota/info", { cache: "no-store" });
+    if (!r.ok) throw new Error("HTTP " + r.status);
+    const d = await r.json();
+
+    $("i_project").textContent = d.project || "\u2014";
+    $("i_compile").textContent = d.compile_time || "";
+    $("i_version").textContent = d.app_version || "\u2014";
+
+    if (d.running) {
+      $("i_run_label").textContent = d.running.label;
+      $("i_run_addr").textContent  = "@ " + d.running.address;
+    }
+
+    if (d.next_update) {
+      $("i_next_label").textContent = d.next_update.label;
+      $("i_next_addr").textContent  = "@ " + d.next_update.address;
+      $("i_next_size").textContent  = (d.next_update.size / 1024 / 1024).toFixed(1) + " MB ("
+                                    + d.next_update.size.toLocaleString() + " B)";
+    } else {
+      $("i_next_label").textContent = "(none)";
+    }
+
+    if (!d.ota_supported) {
+      $("b_ota").textContent = "OTA UNAVAILABLE";
+      $("b_ota").style.color = "var(--err)";
+      showAlert("err", "OTA partitions missing",
+        "This firmware was built with a single-slot partition table. " +
+        "Re-flash once over UART using partitions_ota.csv (see ota_handler.h). " +
+        "Subsequent updates can then use this page.");
+      $("uploadBtn").disabled = true;
+      $("fileInput").disabled = true;
+    } else if (d.ota_in_progress) {
+      $("b_ota").textContent = "BUSY";
+      $("b_ota").style.color = "var(--warn)";
+      showAlert("warn", "OTA already in progress",
+        "Another upload is currently running. Wait for it to finish or reboot.");
+    } else {
+      $("b_ota").textContent = "READY";
+      $("b_ota").style.color = "var(--ok)";
+    }
+  } catch (e) {
+    $("b_ota").textContent = "OFFLINE";
+    $("b_ota").style.color = "var(--err)";
+    showAlert("err", "Could not query device", e.message);
+  }
+}
+
+/* ─── File picker / drag-drop ─── */
+const dz = $("dropZone");
+const fi = $("fileInput");
+
+function fmtSize(b) {
+  if (b < 1024) return b + " B";
+  if (b < 1024*1024) return (b/1024).toFixed(1) + " KB";
+  return (b/1024/1024).toFixed(2) + " MB";
+}
+
+function setFile(f) {
+  selectedFile = f;
+  if (f) {
+    $("dropPrimary").style.display = "none";
+    $("dropSecondary").style.display = "none";
+    $("fileInfo").style.display = "block";
+    $("fileName").textContent = f.name;
+    $("fileSize").textContent = fmtSize(f.size);
+    dz.classList.add("has-file");
+    $("uploadBtn").disabled = false;
+    $("clearBtn").disabled  = false;
+  } else {
+    $("dropPrimary").style.display = "";
+    $("dropSecondary").style.display = "";
+    $("fileInfo").style.display = "none";
+    dz.classList.remove("has-file");
+    $("uploadBtn").disabled = true;
+    $("clearBtn").disabled  = true;
+    fi.value = "";
+  }
+}
+
+fi.addEventListener("change", (e) => {
+  const f = e.target.files[0];
+  if (f) setFile(f);
+});
+
+dz.addEventListener("dragover", (e) => { e.preventDefault(); dz.classList.add("dragover"); });
+dz.addEventListener("dragleave", () => dz.classList.remove("dragover"));
+dz.addEventListener("drop", (e) => {
+  e.preventDefault();
+  dz.classList.remove("dragover");
+  if (e.dataTransfer.files.length) setFile(e.dataTransfer.files[0]);
+});
+
+$("clearBtn").addEventListener("click", () => setFile(null));
+
+/* ─── Alerts ─── */
+function showAlert(type, title, body) {
+  const icons = { info: "\u2139\uFE0F", warn: "\u26A0\uFE0F", err: "\u274C", ok: "\u2705" };
+  $("alertSlot").innerHTML =
+    '<div class="alert ' + type + '">'
+    + '<span class="icon">' + (icons[type] || "") + '</span>'
+    + '<div class="body"><strong>' + title + '</strong>' + body + '</div></div>';
+}
+
+function clearAlert() { $("alertSlot").innerHTML = ""; }
+
+/* ─── Re-enable controls after a failed/aborted upload ─── */
+function unlockControls() {
+  $("uploadBtn").disabled = false;
+  $("clearBtn").disabled  = false;
+  fi.disabled = false;
+}
+
+/* ─── Upload ─── */
+$("uploadBtn").addEventListener("click", () => {
+  if (!selectedFile) return;
+  clearAlert();
+  startUpload(selectedFile);
+});
+
+function startUpload(file) {
+  $("uploadBtn").disabled = true;
+  $("clearBtn").disabled  = true;
+  fi.disabled = true;
+
+  /* Read credentials FIRST. If the user left them blank we bail before
+   * disturbing the progress UI — the device requires Basic Auth on
+   * POST /api/ota and would just return 401 anyway. */
+  const user = ($("otaUser").value || "").trim();
+  const pass = $("otaPass").value || "";
+  if (!user) {
+    showAlert("err", "Username required",
+      "Enter the username that matches the credential compiled into "
+      + "<code>OTA_BASIC_AUTH_B64</code> (see <code>ota_credentials.h</code>).");
+    unlockControls();
+    return;
+  }
+
+  const pw = $("progressWrap");
+  pw.classList.add("visible");
+  $("progStage").textContent = "UPLOADING";
+  $("progPct").textContent   = "0%";
+  $("progBar").style.width   = "0%";
+  $("progBytes").textContent = "0 / " + fmtSize(file.size);
+  $("progSpeed").textContent = "starting\u2026";
+
+  const xhr = new XMLHttpRequest();
+  uploadXHR = xhr;
+
+  const startMs = Date.now();
+
+  xhr.upload.addEventListener("progress", (e) => {
+    if (!e.lengthComputable) return;
+    const pct = Math.round(100 * e.loaded / e.total);
+    $("progPct").textContent = pct + "%";
+    $("progBar").style.width = pct + "%";
+    $("progBytes").textContent = fmtSize(e.loaded) + " / " + fmtSize(e.total);
+    const elapsedS = (Date.now() - startMs) / 1000;
+    if (elapsedS > 0.5) {
+      const bps = e.loaded / elapsedS;
+      $("progSpeed").textContent = fmtSize(bps) + "/s";
+    }
+  });
+
+  xhr.upload.addEventListener("load", () => {
+    $("progStage").textContent = "FLASHING";
+    $("progSpeed").textContent = "writing to flash\u2026";
+  });
+
+  xhr.addEventListener("load", () => {
+    if (xhr.status >= 200 && xhr.status < 300) {
+      $("progStage").textContent = "DONE";
+      $("progPct").textContent = "100%";
+      $("progBar").style.width = "100%";
+      showAlert("ok", "Upload complete \u2014 device rebooting",
+        "The slave will reboot into the new image in ~1 second. "
+        + "After reboot, refresh this page to verify the new version.");
+      setTimeout(waitForReboot, 3000);
+    } else if (xhr.status === 401) {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "Authentication rejected (HTTP 401)",
+        "Check the username and password. The device expects the credentials "
+        + "whose Base64 is compiled into <code>OTA_BASIC_AUTH_B64</code> "
+        + "in <code>ota_credentials.h</code>.");
+      unlockControls();
+    } else if (xhr.status === 503) {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "OTA disabled on device (HTTP 503)",
+        "<code>OTA_BASIC_AUTH_B64</code> is still set to the sentinel "
+        + "(<code>REPLACE_ME</code>). Set a real credential, rebuild, and "
+        + "flash once over UART to enable network OTA.");
+      unlockControls();
+    } else if (xhr.status === 409) {
+      $("progStage").textContent = "FAILED";
+      showAlert("warn", "OTA already in progress (HTTP 409)",
+        "Another upload is currently running. Wait for it to finish, then retry.");
+      unlockControls();
+    } else if (xhr.status === 400) {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "Upload rejected (HTTP 400)",
+        xhr.responseText || "Image was rejected. Wrong chip target, truncated, "
+        + "or wrong Content-Type.");
+      unlockControls();
+    } else {
+      $("progStage").textContent = "FAILED";
+      showAlert("err", "Upload rejected (HTTP " + xhr.status + ")",
+        xhr.responseText || "Unknown error");
+      unlockControls();
+    }
+  });
+
+  xhr.addEventListener("error", () => {
+    $("progStage").textContent = "ERROR";
+    showAlert("err", "Network error during upload",
+      "The connection was lost. Check the device and try again.");
+    unlockControls();
+  });
+
+  xhr.addEventListener("abort", () => {
+    $("progStage").textContent = "ABORTED";
+    showAlert("warn", "Upload cancelled", "No changes were made.");
+    unlockControls();
+  });
+
+  /* IMPORTANT: set the Authorization header BEFORE xhr.send(file). The
+   * browser will not prompt for credentials in response to a 401 on an XHR
+   * POST that already carries a body — the body has been consumed and can't
+   * be replayed. Credentials must be on the first attempt or never. */
+  xhr.open("POST", "/api/ota");
+  xhr.setRequestHeader("Content-Type", "application/octet-stream");
+  xhr.setRequestHeader("Authorization", "Basic " + btoa(user + ":" + pass));
+  xhr.send(file);
+}
+
+/* ─── Reboot watcher ─── */
+async function waitForReboot() {
+  let tries = 0;
+  const maxTries = 30;
+  showAlert("info", "Waiting for device to come back online&hellip;", "");
+  const tick = async () => {
+    tries++;
+    try {
+      const r = await fetch("/api/ota/info", { cache: "no-store" });
+      if (r.ok) {
+        const d = await r.json();
+        showAlert("ok", "Device back online \u2014 new version: " + (d.app_version || "?"),
+          "Running from partition <code>" + (d.running ? d.running.label : "?") + "</code>. "
+          + "<a href='/' style='color:var(--ok)'>Go to status page &rarr;</a>");
+        return;
+      }
+    } catch (e) { /* device still down, keep polling */ }
+    if (tries < maxTries) setTimeout(tick, 2000);
+    else showAlert("warn", "Device did not respond within 60 s",
+      "Check the serial console. The previous firmware may have been restored automatically "
+      + "if the new image failed health checks.");
+  };
+  tick();
+}
+
+/* Initial load */
+loadInfo();
+</script>
+</body>
+</html>
