@@ -232,6 +232,7 @@ static esp_err_t ota_upload_handler(httpd_req_t *req)
     const esp_partition_t *update = NULL;
     char *buf = NULL;
     int received_total = 0;
+    int consecutive_timeouts = 0;
     int content_len = req->content_len;
     esp_err_t resp_err = ESP_OK;
 
@@ -318,14 +319,26 @@ static esp_err_t ota_upload_handler(httpd_req_t *req)
         {
             if (got == HTTPD_SOCK_ERR_TIMEOUT)
             {
-                /* keep going, browser is slow */
-                continue;
+                /* Tolerate a slow uploader, but not a dead one. Each
+                 * timeout is already recv_wait_timeout (30 s) of silence;
+                 * the old unconditional `continue` let a stalled-but-open
+                 * connection pin this httpd socket AND hold g_ota_in_progress
+                 * (409 for every other uploader) forever. Four consecutive
+                 * timeouts = ~2 minutes without a single byte — abort. */
+                if (++consecutive_timeouts < 4)
+                    continue;
+                ESP_LOGE(OTA_TAG,
+                         "Upload stalled at %d/%d bytes (~2 min without data) — aborting",
+                         received_total, content_len);
+                resp_err = ESP_FAIL;
+                break;
             }
             ESP_LOGE(OTA_TAG, "Socket read failed at %d/%d bytes (rc=%d)",
                      received_total, content_len, got);
             resp_err = ESP_FAIL;
             break;
         }
+        consecutive_timeouts = 0;
 
         err = esp_ota_write(ota_handle, buf, got);
         if (err != ESP_OK)
@@ -353,7 +366,7 @@ static esp_err_t ota_upload_handler(httpd_req_t *req)
         esp_ota_abort(ota_handle);
         atomic_store(&g_ota_in_progress, false);
         httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR,
-                            "OTA write failed mid-stream");
+                            "OTA aborted mid-stream (flash write failure or stalled upload)");
         return ESP_FAIL;
     }
 
@@ -401,7 +414,18 @@ static esp_err_t ota_upload_handler(httpd_req_t *req)
 
     /* Intentionally leave g_ota_in_progress = true so concurrent uploaders
      * see "busy" during the ~1 s pre-reboot window. */
-    xTaskCreate(ota_reboot_task, "ota_reboot", 2048, NULL, 5, NULL);
+    if (xTaskCreate(ota_reboot_task, "ota_reboot", 2048, NULL, 5, NULL) != pdPASS)
+    {
+        /* No memory for a 2 KB task right after a successful flash. The
+         * client was already promised a reboot, and NOT rebooting would
+         * leave the OTA subsystem wedged "busy" until a manual power
+         * cycle. Reboot from right here instead — the response is already
+         * in the TCP stack, and the same 1 s grace the dedicated task
+         * would have provided lets it drain to the browser. */
+        ESP_LOGE(OTA_TAG, "ota_reboot task creation failed — rebooting inline");
+        vTaskDelay(pdMS_TO_TICKS(1000));
+        esp_restart();
+    }
     return ESP_OK;
 }
 
@@ -415,13 +439,13 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     const esp_app_desc_t *app = esp_app_get_description();
 
     char buf[512];
-    int off = 0;
+    size_t off = 0;
 
-    off += snprintf(buf + off, sizeof(buf) - off, "{");
+    off = web_append(buf, sizeof(buf), off, "{");
 
     if (running)
     {
-        off += snprintf(buf + off, sizeof(buf) - off,
+        off = web_append(buf, sizeof(buf), off,
                         "\"running\":{\"label\":\"%s\",\"address\":\"0x%lx\",\"size\":%lu,\"subtype\":%d}",
                         running->label,
                         (unsigned long)running->address,
@@ -430,12 +454,12 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     }
     else
     {
-        off += snprintf(buf + off, sizeof(buf) - off, "\"running\":null");
+        off = web_append(buf, sizeof(buf), off, "\"running\":null");
     }
 
     if (next_upd)
     {
-        off += snprintf(buf + off, sizeof(buf) - off,
+        off = web_append(buf, sizeof(buf), off,
                         ",\"next_update\":{\"label\":\"%s\",\"address\":\"0x%lx\",\"size\":%lu,\"subtype\":%d}",
                         next_upd->label,
                         (unsigned long)next_upd->address,
@@ -444,17 +468,17 @@ static esp_err_t ota_info_handler(httpd_req_t *req)
     }
     else
     {
-        off += snprintf(buf + off, sizeof(buf) - off, ",\"next_update\":null");
+        off = web_append(buf, sizeof(buf), off, ",\"next_update\":null");
     }
 
-    off += snprintf(buf + off, sizeof(buf) - off,
+    off = web_append(buf, sizeof(buf), off,
                     ",\"app_version\":\"%s\",\"project\":\"%s\",\"compile_time\":\"%s %s\"",
                     app ? app->version : "?",
                     app ? app->project_name : "?",
                     app ? app->date : "?",
                     app ? app->time : "?");
 
-    off += snprintf(buf + off, sizeof(buf) - off,
+    off = web_append(buf, sizeof(buf), off,
                     ",\"ota_in_progress\":%s,\"ota_supported\":%s}",
                     atomic_load(&g_ota_in_progress) ? "true" : "false",
                     next_upd ? "true" : "false");

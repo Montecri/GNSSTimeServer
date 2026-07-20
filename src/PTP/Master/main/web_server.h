@@ -20,10 +20,11 @@
  *  both the function definitions and the start call. It is designed to be
  *  included EXACTLY ONCE, from main.c, AFTER all the static globals it reads
  *  (g_last_offset, g_freq_ppb, g_integral, g_emac_restart_count, g_sync_seq,
- *  g_announce_seq, g_utc_offset, g_gps_valid, g_gps_seconds, g_link_up,
+ *  g_announce_seq, g_utc_offset, g_gnss_valid, g_gnss_seconds, g_link_up,
  *  g_l2tap_ready, s_led_state, g_phc_offset_ns, g_lock_qual_count,
  *  g_lock_acquired_ms, g_settled_after_holdover, g_boot_time_ms, g_eth_netif,
- *  g_src_mac, g_clock_id) and after the function slave_active_count() is
+ *  g_src_mac, g_clock_id, g_hostname) and after the function
+ *  slave_active_count() is
  *  defined. The simplest place is right above app_main(), at the bottom of
  *  main.c.
  *
@@ -81,6 +82,36 @@
 
 #include "status_page.h"   /* defines STATUS_PAGE_HTML */
 #include "ota_page.h"      /* defines OTA_PAGE_HTML */
+
+#include <stdarg.h>
+
+/* ── Bounded JSON append ──
+ * snprintf returns the WOULD-HAVE-written length when it truncates; the
+ * naive `off += snprintf(buf + off, CAP - off, ...)` pattern therefore
+ * lets `off` sail past CAP on the first truncation, after which the next
+ * call's `CAP - off` underflows (size_t) and writes out of bounds. The
+ * buffers here are generously sized, so that was latent — this helper
+ * makes it impossible: `off` saturates at CAP-1 (the NUL) and further
+ * appends become no-ops, yielding truncated-but-safe JSON. Defined before
+ * ota_handler.h so ota_info_handler can use it too (single-TU include
+ * chain, see the file header). */
+__attribute__((format(printf, 4, 5)))
+static size_t web_append(char *buf, size_t cap, size_t off, const char *fmt, ...)
+{
+    if (off >= cap)
+        return off;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + off, cap - off, fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return off;
+    off += (size_t)n;
+    if (off >= cap)
+        off = cap - 1;
+    return off;
+}
+
 #include "ota_handler.h"   /* defines ota_upload_handler, ota_info_handler */
 
 /* The static globals below are defined in main.c. They are referenced
@@ -150,9 +181,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     double  freq_ppb    = g_freq_ppb;
     double  integ       = g_integral;
     int     tai_off     = g_utc_offset;
-    bool    gps_valid   = g_gps_valid;
-    time_t  gps_sec     = g_gps_seconds;
-    time_t  last_gps_up = g_last_gps_update;
+    bool    gnss_valid   = g_gnss_valid;
+    time_t  gnss_sec     = g_gnss_seconds;
+    time_t  last_gnss_up = g_last_gnss_update;
     int64_t phc_resid   = g_phc_offset_ns;
     uint8_t lock_qual   = g_lock_qual_count;
     int64_t lock_ms     = g_lock_acquired_ms;
@@ -172,6 +203,17 @@ static esp_err_t status_handler(httpd_req_t *req)
     size_t heap_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_min  = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_lfb  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    /* ESP32-P4 retention-capable internal SRAM. This reports the live
+     * capability heap, rather than a build-specific address copied from the
+     * startup log. */
+#ifdef MALLOC_CAP_RETENTION
+    size_t retent_total = heap_caps_get_total_size(MALLOC_CAP_RETENTION);
+    size_t retent_free  = heap_caps_get_free_size(MALLOC_CAP_RETENTION);
+#else
+    size_t retent_total = 0;
+    size_t retent_free  = 0;
+#endif
 
     /* App info (project name, version, compile time, ELF SHA) */
     const esp_app_desc_t *app = esp_app_get_description();
@@ -203,12 +245,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         }
     }
 
-    /* UTC time string from GPS seconds */
+    /* UTC time string from GNSS seconds */
     char utc_str[12] = "--:--:--";
-    if (gps_valid && gps_sec > 1577836800LL)
+    if (gnss_valid && gnss_sec > 1577836800LL)
     {
         struct tm tm_utc;
-        time_t t = gps_sec;
+        time_t t = gnss_sec;
         gmtime_r(&t, &tm_utc);
         snprintf(utc_str, sizeof(utc_str), "%02d:%02d:%02d",
                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
@@ -227,12 +269,12 @@ static esp_err_t status_handler(httpd_req_t *req)
         snprintf(locked_for, sizeof(locked_for), "%02u:%02u:%02u", h, m, s);
     }
 
-    /* GPS age in seconds (clamped to a sane range) */
+    /* GNSS age in seconds (clamped to a sane range) */
     time_t now_w = time(NULL);
-    long gps_age = (long)(now_w - last_gps_up);
-    if (gps_age < 0) gps_age = 0;
-    if (gps_age > 99999) gps_age = 99999;
-    bool gps_fix = (gps_age < 3) && gps_valid;
+    long gnss_age = (long)(now_w - last_gnss_up);
+    if (gnss_age < 0) gnss_age = 0;
+    if (gnss_age > 99999) gnss_age = 99999;
+    bool gnss_fix = (gnss_age < 3) && gnss_valid;
 
     /* ---------- FreeRTOS task table ---------- */
     /* uxTaskGetSystemState fills an array of TaskStatus_t; we allocate room
@@ -282,7 +324,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     /* Heap leak delta: we don't track baseline here -- the heap_monitor task
      * tracks it internally. Report 0 (unknown) and the UI shows "+0 B / ok". */
 
-    off += snprintf(buf + off, BUF_SZ - off,
+    off = web_append(buf, BUF_SZ, off,
         "{"
         "\"chip\":\"ESP32-P4\","
         "\"chip_rev\":\"v%d.%d\","
@@ -300,7 +342,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"heap_min\":%u,"
         "\"heap_lfb\":%u,"
         "\"heap_leak\":0,"
-        "\"retent_kb\":141,"
+        "\"retent_total\":%u,"
+        "\"retent_free\":%u,"
         "\"ram1_kb\":384,"
         "\"ram2_kb\":18,"
         "\"rtc_kb\":31,"
@@ -310,6 +353,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"ip\":\"%s\","
         "\"ip_source\":\"DHCP/static\","
         "\"mac\":\"%s\","
+        "\"hostname\":\"%s\","
         "\"emac_restarts\":%" PRIu32 ","
         "\"promiscuous\":false,"
         "\"wdt_healthy\":true,"
@@ -338,8 +382,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"phc_residual_ns\":%lld,"
         "\"holdover_timeout_s\":5,"
         "\"settled\":%s,"
-        "\"gps_age_s\":%ld,"
-        "\"gps_fix\":%s,"
+        "\"gnss_age_s\":%ld,"
+        "\"gnss_fix\":%s,"
         "\"pps_led_active\":%s,"
         "\"tasks\":[",
         chip.revision / 100, chip.revision % 100,
@@ -353,10 +397,13 @@ static esp_err_t status_handler(httpd_req_t *req)
         (unsigned)heap_free,
         (unsigned)heap_min,
         (unsigned)heap_lfb,
+        (unsigned)retent_total,
+        (unsigned)retent_free,
         link_up     ? "true" : "false",
         l2tap_ready ? "true" : "false",
         ip_str,
         mac_str,
+        g_hostname[0] ? g_hostname : "",
         emac_rst,
         g_i_am_master ? "MASTER" : "SLAVE",
         clk_str,
@@ -376,8 +423,8 @@ static esp_err_t status_handler(httpd_req_t *req)
         rej_streak,
         (long long)phc_resid,
         settled ? "true" : "false",
-        gps_age,
-        gps_fix ? "true" : "false",
+        gnss_age,
+        gnss_fix ? "true" : "false",
         (st == LED_STATE_LOCKED) ? "true" : "false"
     );
 
@@ -396,7 +443,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         const char *name = t->pcTaskName ? t->pcTaskName : "?";
         if      (!strcmp(name, "ptp_rx"))   stack_bytes = 8192;
         else if (!strcmp(name, "ptp_tx"))   stack_bytes = 8192;
-        else if (!strcmp(name, "gps"))      stack_bytes = 6144;
+        else if (!strcmp(name, "gnss"))      stack_bytes = 6144;
         else if (!strcmp(name, "servo"))    stack_bytes = 6144;
         else if (!strcmp(name, "pps_task")) stack_bytes = 4096;
         else if (!strcmp(name, "pps_led"))  stack_bytes = 2048;
@@ -411,7 +458,7 @@ static esp_err_t status_handler(httpd_req_t *req)
 
         int core = web_task_core(t->xHandle);
 
-        off += snprintf(buf + off, BUF_SZ - off,
+        off = web_append(buf, BUF_SZ, off,
             "%s{\"name\":\"%s\",\"priority\":%u,\"stack_bytes\":%" PRIu32
             ",\"hwm_bytes\":%" PRIu32 ",\"core\":%d}",
             first ? "" : ",",
@@ -423,7 +470,7 @@ static esp_err_t status_handler(httpd_req_t *req)
         first = false;
     }
 
-    off += snprintf(buf + off, BUF_SZ - off, "]}");
+    off = web_append(buf, BUF_SZ, off, "]}");
 
     free(tarr);
 
@@ -520,7 +567,7 @@ static esp_err_t health_handler(httpd_req_t *req)
     uint32_t rx_hwm = 0;
     double   rx_cpu = -1.0;
 
-    off += snprintf(buf + off, BUF_SZ - off,
+    off = web_append(buf, BUF_SZ, off,
         "{"
         "\"uptime_s\":%lld,"
         "\"runtime_stats\":%s,"
@@ -555,11 +602,11 @@ static esp_err_t health_handler(httpd_req_t *req)
         if (!strcmp(name, "ptp_rx")) { rx_hwm = hwm_bytes; rx_cpu = cpu; }
 
         if (cpu < 0.0)
-            off += snprintf(buf + off, BUF_SZ - off,
+            off = web_append(buf, BUF_SZ, off,
                 "%s{\"name\":\"%s\",\"prio\":%u,\"stack_hwm\":%" PRIu32 ",\"cpu_pct\":null}",
                 first ? "" : ",", name, (unsigned)t->uxCurrentPriority, hwm_bytes);
         else
-            off += snprintf(buf + off, BUF_SZ - off,
+            off = web_append(buf, BUF_SZ, off,
                 "%s{\"name\":\"%s\",\"prio\":%u,\"stack_hwm\":%" PRIu32 ",\"cpu_pct\":%.1f}",
                 first ? "" : ",", name, (unsigned)t->uxCurrentPriority, hwm_bytes, cpu);
         first = false;
@@ -569,12 +616,12 @@ static esp_err_t health_handler(httpd_req_t *req)
     s_cpu_prev_total = total_run;
 #endif
 
-    off += snprintf(buf + off, BUF_SZ - off,
+    off = web_append(buf, BUF_SZ, off,
         "],\"rx_task\":{\"stack_size\":8192,\"stack_hwm\":%" PRIu32 ",", rx_hwm);
     if (rx_cpu < 0.0)
-        off += snprintf(buf + off, BUF_SZ - off, "\"cpu_pct\":null}}");
+        off = web_append(buf, BUF_SZ, off, "\"cpu_pct\":null}}");
     else
-        off += snprintf(buf + off, BUF_SZ - off, "\"cpu_pct\":%.1f}}", rx_cpu);
+        off = web_append(buf, BUF_SZ, off, "\"cpu_pct\":%.1f}}", rx_cpu);
 
     free(tarr);
     httpd_resp_set_type(req, "application/json");

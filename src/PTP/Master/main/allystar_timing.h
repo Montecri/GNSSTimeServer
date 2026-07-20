@@ -13,8 +13,8 @@
  *
  * Integration:
  *   1. Call initialize_allystar_timing_service(cb) once during boot, after
- *      gps_uart_init() has installed the UART driver.
- *   2. Inside the existing gps_task UART-read loop, after uart_read_bytes()
+ *      gnss_uart_init() has installed the UART driver.
+ *   2. Inside the existing gnss_task UART-read loop, after uart_read_bytes()
  *      returns >0, call allystar_timing_feed_data(buf, len). This forks the
  *      RX byte stream to the timing module's parser while leaving the normal
  *      NMEA pipeline intact.
@@ -22,7 +22,7 @@
  *      callback runs in the timing task context.
  *
  * Threading: the configurator runs in its own FreeRTOS task. It uses a
- * stream-buffer pump driven by gps_task; the timing task itself only writes
+ * stream-buffer pump driven by gnss_task; the timing task itself only writes
  * to UART (TX is mutex-protected). When the sequence terminates (success or
  * failure), initialization_sequence_done flips to true and feed_data() becomes
  * a cheap early-out.
@@ -43,7 +43,7 @@
 extern "C" {
 #endif
 
-/* When true, allystar_timing_feed_data() is a no-op. Polled by gps_task to
+/* When true, allystar_timing_feed_data() is a no-op. Polled by gnss_task to
  * avoid the cost of forwarding bytes once the sequence is finished. */
 extern volatile bool initialization_sequence_done;
 
@@ -55,9 +55,10 @@ extern const char *volatile g_timing_error_step;
 extern volatile bool g_timing_config_ok;
 
 /**
- * Error callback. Fires once if any CFG step fails after retries, or if the
- * 3D-fix wait times out. failed_step_name is a static string from the .rodata
- * of this translation unit; no need to copy.
+ * Error callback. Fires once if any CFG step fails after retries. (The
+ * 3D-fix wait never times out: the survey starts whenever the fix arrives,
+ * however long that takes.) failed_step_name is a static string from the
+ * .rodata of this translation unit; no need to copy.
  */
 typedef void (*allystar_timing_error_cb_t)(const char *failed_step_name);
 
@@ -71,7 +72,7 @@ void initialize_allystar_timing_service(allystar_timing_error_cb_t error_callbac
 
 /**
  * Fork UART RX bytes into the timing module. Cheap no-op once the sequence
- * has finished. Call from gps_task immediately after uart_read_bytes().
+ * has finished. Call from gnss_task immediately after uart_read_bytes().
  */
 void allystar_timing_feed_data(const uint8_t *buffer, size_t length);
 

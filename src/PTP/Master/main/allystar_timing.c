@@ -3,6 +3,26 @@
  *
  * TAU1201 timing-mode configurator. See allystar_timing.h for context.
  *
+ * Big picture: the TAU1201 is a GNSS receiver chip (it listens to GPS/
+ * GLONASS/Galileo/BeiDou/QZSS satellites to figure out where it is and,
+ * more importantly for us, exactly what time it is). This project uses that
+ * precise time as the reference clock for a PTP Grandmaster - a device
+ * that hands out accurate time to other devices on the network (PTP =
+ * Precision Time Protocol, IEEE 1588). A plain "I have a GPS fix" isn't
+ * good enough for that: Some GNSS chips have a "timing mode" that trades some
+ * navigation features for a much more stable, accurate 1-pulse-per-second
+ * (PPS) signal - a hardware pulse, once a second, precisely aligned to the
+ * start of the UTC second, which is what actually disciplines the clock.
+ * This file's job is to talk to the receiver over a serial (UART) link at
+ * boot and configure it into that timing mode.
+ *
+ * The receiver only understands a specific binary command protocol (not
+ * plain text) for configuration, described below. This file builds those
+ * binary commands, sends them, and waits for the receiver to confirm each
+ * one before moving to the next - see "Frame builder" and "RX parser"
+ * further down for how individual bytes on the wire are turned into
+ * commands and responses.
+ *
  * Every CFG message ID and payload layout below has been cross-referenced
  * against the ALLYSTAR GNSS Receiver Protocol Specification V2.3:
  *   - Frame structure & checksum:  §3
@@ -22,6 +42,12 @@
  * and you'll need to fall back to CFG-FIXEDLLA / CFG-FIXEDECEF with surveyed
  * coordinates as firmware constants.
  *
+ * ("Survey", here, means the receiver measures its own antenna position
+ * very precisely over several minutes, by averaging many fixes, instead of
+ * trusting a single noisy GPS fix. A timing receiver that knows exactly
+ * where its antenna is can compute time more accurately, since it no
+ * longer has to solve for its own position at the same time.)
+ *
  * Survey completion strategy:
  *   The spec exposes no progress sentence for the survey. We poll NAV-POSLLH
  *   periodically and consider the survey "good enough" when either:
@@ -29,23 +55,32 @@
  *     (b) >= 5 minutes have elapsed AND hAcc <= SURVEY_HACC_TARGET_MM.
  *   The module continues converging internally regardless; this just lets us
  *   stop waiting and proceed with the rest of the boot sequence.
+ *   (hAcc = "horizontal accuracy": the receiver's own estimate, in
+ *   millimeters, of how far off its calculated position might be.)
  */
 
 #include <stdio.h>
 #include <string.h>
 #include <stdlib.h>
 
+/* FreeRTOS is the real-time operating system ESP-IDF runs on top of - it's
+ * what lets this firmware run several independent "tasks" (think: mini
+ * threads) at once, e.g. one task reading GNSS UART data while another
+ * handles the network stack. semphr.h gives us semaphores/mutexes
+ * (thread-safety primitives - see "Module state" below); stream_buffer.h
+ * gives us a thread-safe byte queue used to hand UART bytes from the main
+ * GNSS task into this module's own task. */
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 #include "freertos/stream_buffer.h"
-#include "driver/uart.h"
-#include "esp_log.h"
-#include "esp_timer.h"
+#include "driver/uart.h"   /* ESP-IDF's serial-port (UART) driver */
+#include "esp_log.h"       /* ESP_LOGI/ESP_LOGW/ESP_LOGE: tagged console logging */
+#include "esp_timer.h"      /* esp_timer_get_time(): microsecond-resolution clock */
 
 #include "allystar_timing.h"
 
-static const char *TAG = "ALLYSTAR_TIMING";
+static const char *TAG = "ALLYSTAR_TIMING";  /* prefixes every log line from this file */
 
 /* ============================ Configuration ============================== */
 
@@ -59,11 +94,20 @@ static const char *TAG = "ALLYSTAR_TIMING";
 #define SURVEY_POLL_PERIOD_MS           (5000)      /* NAV-POSLLH poll rate  */
 #define SURVEY_ACCLIMIT_MM              (100)       /* tells module its goal */
 
-/* 3D fix wait (boot timeout). Each tick of the wait loop is 100 ms below. */
-#define FIX_WAIT_TIMEOUT_TICKS          (5 * 60 * 10)   /* 5 minutes         */
+/* 3D fix wait. "3D fix" = the receiver has locked onto enough satellites
+ * to compute latitude, longitude, AND altitude (as opposed to a weaker 2D
+ * fix). We require this before trusting the receiver's timing enough to
+ * survey. The wait is INDEFINITE by design: the survey must start whenever
+ * the fix arrives, however long acquisition takes — a cold start under a
+ * poor sky view can exceed any fixed budget, and giving up would cost the
+ * whole uptime its surveyed timing mode (see wait_for_3d_fix). */
 #define FIX_STABLE_COUNT                (10)            /* consecutive GGAs  */
 
-/* PPS */
+/* PPS = "Pulse Per Second", the once-a-second hardware tick described in
+ * the file header above - the actual signal a PTP grandmaster disciplines
+ * its clock against. These constants describe what we'd *like* the pulse
+ * to look like, but see the "CFG-PPS is intentionally disabled" comment
+ * further down for why they're currently unused. */
 #define PPS_PERIOD_US                   (1000000UL)     /* 1 Hz              */
 #define PPS_PULSE_WIDTH_US              (100000UL)      /* 100 ms high       */
 #define PPS_OFFSET_NS                   (25)            /* cable delay comp  */
@@ -79,8 +123,23 @@ static const char *TAG = "ALLYSTAR_TIMING";
  *   QZSS L1    = 0x00000020
  *   SBAS L1    = 0x00000040
  * Default: all four major constellations on L1. */
+/* This is a bitmask: each satellite constellation (GPS, GLONASS, etc.) is
+ * one bit. Setting a bit tells the receiver "you're allowed to use this
+ * constellation"; more constellations generally means more visible
+ * satellites and a faster, more robust fix, at the cost of a bit more
+ * receiver processing. */
 
 /* TEMPORARY DEBUGGING VALUES — loosen until fix is stable, then tighten */
+/* DOP = "Dilution of Precision" - a unitless number describing how the
+ * current satellite geometry affects fix accuracy (lower is better;
+ * satellites spread out across the sky give low DOP, satellites clustered
+ * together give high DOP). pDOP = position DOP, tDOP = time DOP. These
+ * limits tell the receiver "don't bother reporting a fix as good if DOP is
+ * worse than this" - set very loose (50) here for easier debugging; tighten
+ * once everything is confirmed working, since lower limits mean stricter,
+ * more accurate fixes only. "Elevation" (ELEV_*) similarly filters out
+ * satellites too close to the horizon, where signals are weaker and
+ * noisier - 0° here means "don't filter anything out." */
 #define NAVSAT_ENABLE_MASK    (0xFFFFFFFFUL)   /* everything the module supports */
 #define ELEV_TRK_RAD          (0.0f)           /* 0° — track anything */
 #define ELEV_NAV_RAD          (0.0f)           /* 0° — use anything in nav */
@@ -89,40 +148,68 @@ static const char *TAG = "ALLYSTAR_TIMING";
 
 /* Static-hold speed. Spec §5.4.10 example shows raw value = cm/s directly
  * despite "scale 0.01" annotation. 10 = 10 cm/s = 0.1 m/s. */
+/* "Static hold" tells the receiver to assume it isn't moving once its
+ * speed drops below this threshold - reasonable for a fixed timing
+ * antenna, and it lets the receiver's internal filters lock down harder
+ * on a stable position/time instead of continuously re-solving for motion. */
 #define SPDHOLD_RAW_CMS                 (10)
 
 /* Carrier smoothing. Spec §5.4.18:
  *   -1 = auto, 0 = disable, >=1 = window (x+1). */
+/* Carrier-phase smoothing blends the noisy raw pseudorange measurements
+ * with the much cleaner (but ambiguous on its own) carrier-phase signal,
+ * averaged over a moving window, to reduce position/time jitter. -1 lets
+ * the receiver's firmware pick a sensible window size automatically. */
 #define CARRSMOOTH_WINDOWS              (-1)            /* auto              */
 
 /* ACK behaviour */
+/* Every CFG-* command we send should get an ACK (acknowledged) or NAK
+ * (rejected) reply. If none arrives within ACK_TIMEOUT_MS, we assume the
+ * command (or its reply) was lost on the wire and resend, up to
+ * MAX_COMMAND_RETRIES times, before giving up on that step entirely. */
 #define MAX_COMMAND_RETRIES             (3)
 #define ACK_TIMEOUT_MS                  (300)
 
 /* ============================ Protocol bytes ============================= */
+/* Every command/response on this UART link is a small binary "frame" - a
+ * fixed structure of bytes, not human-readable text (that's the NMEA
+ * sentences also flowing on this same wire, which this module ignores
+ * except for the GGA fix-quality check further down). A frame looks like:
+ *
+ *   0xF1 0xD9 | GroupID | SubID | Length(2 bytes) | Payload | Checksum(2)
+ *
+ * SYNC1/SYNC2 are fixed bytes that mark "a frame starts here" - used by
+ * the RX parser below to find frame boundaries in the raw byte stream.
+ * GroupID+SubID together identify what kind of message it is (a specific
+ * CFG-* command, an ACK/NAK, a NAV-POSLLH position report, etc.) - think
+ * of them like a 2-byte "message type" opcode. */
 
 #define UBP_SYNC1   0xF1
 #define UBP_SYNC2   0xD9                    /* per spec §3 */
 
-#define CLS_NAV     0x01
-#define CLS_ACK     0x05
-#define CLS_CFG     0x06
+#define CLS_NAV     0x01   /* "NAV" group: navigation results (e.g. position) */
+#define CLS_ACK     0x05   /* "ACK" group: acknowledge/reject a command       */
+#define CLS_CFG     0x06   /* "CFG" group: configuration commands we send    */
 
-#define ACK_ACK     0x01
-#define ACK_NAK     0x00
+#define ACK_ACK     0x01   /* SubID meaning "command accepted" within CLS_ACK */
+#define ACK_NAK     0x00   /* SubID meaning "command rejected" within CLS_ACK */
 
-#define NAV_POSLLH      0x02
-#define CFG_PPS         0x07
-#define CFG_DOP         0x0A
-#define CFG_ELEV        0x0B
-#define CFG_NAVSAT      0x0C
-#define CFG_SPDHOLD     0x0F
-#define CFG_SURVEY      0x12
-#define CFG_CARRSMOOTH  0x17
+/* SubIDs for the specific messages this file sends/receives. */
+#define NAV_POSLLH      0x02   /* position report: lat/lon/height + accuracy */
+#define CFG_PPS         0x07   /* configure the 1-pulse-per-second output   */
+#define CFG_DOP         0x0A   /* set DOP (fix-quality) acceptance limits   */
+#define CFG_ELEV        0x0B   /* set minimum satellite elevation to use    */
+#define CFG_NAVSAT      0x0C   /* enable/disable GNSS constellations        */
+#define CFG_SPDHOLD     0x0F   /* set the "assume stationary below this speed" threshold */
+#define CFG_SURVEY      0x12   /* start the self-survey (see file header)   */
+#define CFG_CARRSMOOTH  0x17   /* set carrier-phase smoothing window        */
 
 /* ============================ Step names ================================= */
+/* Human-readable labels for each configuration step, reported through the
+ * error callback (see allystar_timing.h) so calling code - and whoever's
+ * looking at the OLED display or serial log - can tell at a glance which
+ * step failed, without decoding raw protocol IDs. */
 
-static const char *STEP_3D_FIX       = "3D-FIX";
 static const char *STEP_CFG_NAVSAT   = "CFG-NAVSAT";
 static const char *STEP_CFG_ELEV     = "CFG-ELEV";
 static const char *STEP_CFG_DOP      = "CFG-DOP";
@@ -132,6 +219,15 @@ static const char *STEP_CFG_CARRSM   = "CFG-CARRSMOOTH";
 static const char *STEP_CFG_SURVEY   = "CFG-SURVEY";
 
 /* ============================ Module state =============================== */
+/* `volatile` below marks variables that get written by one FreeRTOS task
+ * (this module's own configuration task) and read by another (e.g. the
+ * main GNSS task, or OLED display code) - it tells the compiler not to
+ * cache these values in a register, since another task could change them
+ * at any time. A semaphore/mutex is a small lock: `ack_sem` lets the
+ * "send a command and wait" code block until the RX parser signals that a
+ * reply arrived, and `uart_tx_mutex` makes sure only one task writes to
+ * the UART at a time (this task, and whatever else on the board might
+ * also transmit on it), so bytes from two different sends can't interleave. */
 
 volatile bool       initialization_sequence_done = false;
 const char *volatile g_timing_error_step          = NULL;
@@ -155,7 +251,16 @@ static volatile bool     last_posllh_valid = false;
 static volatile uint32_t last_posllh_hacc_mm = 0xFFFFFFFFu;
 
 /* ============================ Frame builder ============================== */
+/* This section builds the outgoing binary frames described above and
+ * writes them to the UART. */
 
+/* An 8-bit Fletcher checksum: a running pair of sums (a, b) computed over
+ * every byte in the frame (except the sync bytes and the checksum bytes
+ * themselves). The receiver recomputes the same sums over what it
+ * received and compares - if a byte got corrupted in transit, the sums
+ * won't match and the receiver silently drops the frame (which is why
+ * send_cfg_with_ack() below has to retry on timeout: a corrupted command
+ * looks identical to a lost one from the sender's point of view). */
 static void calculate_ubp_checksum(const uint8_t *packet, uint16_t length,
                                    uint8_t *ck_a, uint8_t *ck_b)
 {
@@ -170,7 +275,10 @@ static void calculate_ubp_checksum(const uint8_t *packet, uint16_t length,
     *ck_b = b;
 }
 
-/* Build and transmit a single binary frame. Returns true on TX success. */
+/* Build and transmit a single binary frame. Returns true on TX success.
+ * "TX success" only means the bytes were handed to the UART driver - it
+ * says nothing about whether the receiver understood or accepted the
+ * command; that's what the ACK/NAK dance in send_cfg_with_ack() is for. */
 static bool send_ubp_packet(uint8_t group_id, uint8_t sub_id,
                             const uint8_t *payload, uint16_t payload_len)
 {
@@ -218,6 +326,15 @@ static bool send_ubp_packet(uint8_t group_id, uint8_t sub_id,
  *
  * Frame layout we care about:
  *   F1 D9 | GROUP | SUB | LEN_LO LEN_HI | PAYLOAD[LEN] | CK_A CK_B
+ *
+ * "Fed one byte at a time" is deliberate: UART data arrives in whatever
+ * small chunks the hardware/driver happens to deliver, not neatly aligned
+ * to frame boundaries, so the parser can't assume it ever sees a whole
+ * frame at once. Instead it's a small state machine (a fancy way of
+ * saying: a variable that remembers "which part of a frame am I currently
+ * expecting next?", advanced one step per incoming byte). This makes it
+ * naturally resilient to bytes arriving one, ten, or a hundred at a time -
+ * the parser doesn't care, it just keeps its place between calls.
  *
  * State machine:
  *   0  scan for F1
@@ -342,6 +459,11 @@ static void parser_feed_byte(uint8_t b)
     }
 }
 
+/* Pulls bytes out of the FreeRTOS stream buffer (filled by
+ * allystar_timing_feed_data(), fed from the main GNSS UART-read loop) and
+ * runs each one through parser_feed_byte(). This is how this module gets
+ * its own copy of the raw serial traffic without interfering with the
+ * normal NMEA parsing elsewhere in the firmware. */
 static void drain_stream_into_parser(uint32_t max_ms)
 {
     /* Pull whatever's queued, plus what arrives within max_ms. */
@@ -357,6 +479,10 @@ static void drain_stream_into_parser(uint32_t max_ms)
 }
 
 /* ============================ Send-with-ACK ============================== */
+/* Turns the fire-and-forget send_ubp_packet() into a reliable, synchronous
+ * "send this command and don't return until we know whether the receiver
+ * accepted it" call - retrying automatically if no reply shows up in time.
+ * Every CFG-* step in the boot sequence goes through this. */
 
 static bool send_cfg_with_ack(uint8_t sub, const uint8_t *payload, uint16_t len)
 {
@@ -402,6 +528,13 @@ static bool poll_navposllh(uint32_t timeout_ms)
 }
 
 /* ============================ NMEA helpers =============================== */
+/* NMEA is the standard plain-text sentence format GNSS receivers use to
+ * report position/time/status (as opposed to the binary ALLYSTAR frames
+ * handled above) - e.g. a line like "$GPGGA,123519,...*47\r\n". Comma-
+ * separated fields, a specific sentence per message type. Most of the
+ * firmware's normal GPS handling reads these sentences directly; here we
+ * only care about one thing from one sentence type: whether the receiver
+ * currently has a 3D fix, read from a GGA sentence. */
 
 /* Check a single $xxGGA line for fix quality 1..5 (any 3D fix accepted). */
 static bool gga_has_3d_fix(const char *line)
@@ -422,6 +555,10 @@ static bool gga_has_3d_fix(const char *line)
 }
 
 /* ============================ Feed hook ================================== */
+/* The public entry point declared in allystar_timing.h - the main GNSS
+ * task calls this with every chunk of raw UART bytes it reads, so this
+ * module can watch the same stream (for ACKs and NAV-POSLLH replies)
+ * without taking over the UART or duplicating the normal NMEA read loop. */
 
 void allystar_timing_feed_data(const uint8_t *buffer, size_t length)
 {
@@ -435,18 +572,39 @@ void allystar_timing_feed_data(const uint8_t *buffer, size_t length)
 }
 
 /* ============================ Sequence task ============================== */
+/* The actual boot-time configuration sequence: a dedicated FreeRTOS task
+ * (spawned by initialize_allystar_timing_service() at the bottom of this
+ * file) that runs through every CFG-* step in order, waits for a 3D fix,
+ * runs the survey, and then exits. Everything above this point is
+ * plumbing the sequence below relies on. */
 
+/* Called once the sequence is over, whether it succeeded or failed. Flips
+ * initialization_sequence_done so allystar_timing_feed_data() becomes a
+ * cheap early-out from then on (see the feed hook above), and resets the
+ * parser. The stream buffer is intentionally retained — see inside. */
 static void cleanup_after_sequence(void)
 {
-    /* Stop forwarding bytes. The stream buffer will be torn down. */
+    /* Stop forwarding bytes: from here on feed_data() early-outs on
+     * initialization_sequence_done before ever touching the stream.
+     *
+     * The stream buffer is deliberately NOT deleted. gnss_task, on the
+     * other core, may be BETWEEN feed_data()'s NULL-check and its
+     * xStreamBufferSend() at this exact moment; deleting the buffer here
+     * was a textbook TOCTOU use-after-free — a once-per-boot lottery for
+     * heap corruption at the instant the sequence ended. No flag/delay
+     * dance closes that window provably (the producer can always be
+     * preempted between check and use for longer than any chosen delay).
+     * Keeping the single 2 KB, once-per-boot buffer allocated for the
+     * rest of the uptime closes it by construction: a racing send lands
+     * harmlessly in a live buffer that nobody will ever read again. */
     initialization_sequence_done = true;
-    if (timing_stream) {
-        vStreamBufferDelete(timing_stream);
-        timing_stream = NULL;
-    }
     parser_reset();
 }
 
+/* Records that a named step failed (readable by OLED/status code via
+ * g_timing_error_step), tears down sequence resources, and notifies the
+ * caller-supplied error callback, if any, so the rest of the firmware can
+ * react (e.g. show an error, fall back to a less accurate clock source). */
 static void fail_step(const char *step)
 {
     ESP_LOGE(TAG, "Step failed: %s", step);
@@ -457,21 +615,40 @@ static void fail_step(const char *step)
 }
 
 /* Pull NMEA lines out of the stream buffer until we observe FIX_STABLE_COUNT
- * consecutive GGAs with a 3D fix. Returns false on timeout. */
-static bool wait_for_3d_fix(void)
+ * consecutive GGAs with a 3D fix. Waits INDEFINITELY, by design: the survey
+ * must start whenever the fix arrives, however long acquisition takes — a
+ * 15-minute cold start under a poor sky view is still a perfectly good
+ * survey candidate, and giving up would cost the whole uptime its surveyed
+ * timing mode. A once-a-minute log line keeps a genuinely fixless box (no
+ * antenna, indoors) diagnosable from the serial console; the OLED keeps
+ * showing RUNNING meanwhile.
+ * Requiring several consecutive good fixes (not just one) filters out a
+ * fix that flickers briefly - e.g. from a bad satellite geometry moment -
+ * before we commit to trusting the receiver's timing. */
+static void wait_for_3d_fix(void)
 {
-    ESP_LOGI(TAG, "Waiting for stable 3D fix...");
+    ESP_LOGI(TAG, "Waiting for stable 3D fix (no timeout — survey starts "
+                  "whenever the fix arrives)...");
     char line[128];
     size_t lidx = 0;
     int stable = 0;
-    uint32_t ticks = 0;
+    const int64_t t0_us = esp_timer_get_time();
+    int64_t last_note_us = t0_us;
 
-    while (ticks < FIX_WAIT_TIMEOUT_TICKS) {
+    for (;;) {
         uint8_t b;
         size_t n = xStreamBufferReceive(timing_stream, &b, 1,
                                         pdMS_TO_TICKS(100));
+
+        /* Progress heartbeat, once a minute, whether or not bytes flow. */
+        int64_t now_us = esp_timer_get_time();
+        if (now_us - last_note_us >= 60LL * 1000000LL) {
+            ESP_LOGW(TAG, "Still waiting for 3D fix (%lld min elapsed)",
+                     (long long)((now_us - t0_us) / 60000000LL));
+            last_note_us = now_us;
+        }
+
         if (n == 0) {
-            ticks++;
             continue;
         }
         /* Also feed the binary parser so we don't drop ACKs/NAV frames. */
@@ -486,8 +663,9 @@ static bool wait_for_3d_fix(void)
                 if (gga_has_3d_fix(line)) {
                     stable++;
                     if (stable >= FIX_STABLE_COUNT) {
-                        ESP_LOGI(TAG, "3D fix stable");
-                        return true;
+                        ESP_LOGI(TAG, "3D fix stable after %lld s",
+                                 (long long)((now_us - t0_us) / 1000000LL));
+                        return;
                     }
                 } else if (strstr(line, "GGA")) {
                     stable = 0;
@@ -500,10 +678,12 @@ static bool wait_for_3d_fix(void)
             }
         }
     }
-    return false;
 }
 
-/* Run CFG-SURVEY, then loop polling NAV-POSLLH until done-enough. */
+/* Run CFG-SURVEY, then loop polling NAV-POSLLH until done-enough.
+ * See the "Survey completion strategy" note in the file header for the
+ * exact stop condition (max duration, or good-enough accuracy after a
+ * minimum wait). */
 static bool run_survey(void)
 {
     uint8_t payload[8];
@@ -558,9 +738,14 @@ static bool run_survey(void)
     }
 }
 
+/* The FreeRTOS task function itself: runs top to bottom exactly once per
+ * boot, sending each CFG-* command in turn (bailing out via fail_step()
+ * and vTaskDelete(NULL) - FreeRTOS's "this task is done, clean me up" call
+ * - the moment anything fails), then waiting for a fix and running the
+ * survey, before marking the whole sequence successful. */
 static void allystar_timing_sequence_task(void *pv)
 {
-    (void)pv;
+    (void)pv;   /* unused FreeRTOS task parameter */
 
     /* -------- Phase A: send config that doesn't need a fix -------- */
 
@@ -680,11 +865,9 @@ static void allystar_timing_sequence_task(void *pv)
     //     ESP_LOGI(TAG, "CFG-PPS OK");
     // }
 
-    /* -------- Phase B: wait for fix, run survey -------- */
+    /* -------- Phase B: wait for fix (indefinitely), then run survey -------- */
 
-    if (!wait_for_3d_fix()) {
-        fail_step(STEP_3D_FIX); vTaskDelete(NULL); return;
-    }
+    wait_for_3d_fix();
     if (!run_survey()) {
         fail_step(STEP_CFG_SURVEY); vTaskDelete(NULL); return;
     }
@@ -697,6 +880,11 @@ static void allystar_timing_sequence_task(void *pv)
 }
 
 /* ============================ Public init ================================ */
+/* The other public entry point from allystar_timing.h: called once during
+ * boot to create the semaphores/mutex/stream buffer this module needs and
+ * spawn the sequence task above. Safe to call more than once - only the
+ * first call actually does anything, since the receiver only needs to be
+ * configured once per power-up. */
 
 void initialize_allystar_timing_service(allystar_timing_error_cb_t cb)
 {
@@ -710,6 +898,8 @@ void initialize_allystar_timing_service(allystar_timing_error_cb_t cb)
     if (timing_stream == NULL) timing_stream = xStreamBufferCreate(STREAM_BUF_BYTES, 1);
     parser_reset();
 
+    /* 4096-byte stack, priority 5, no task-notification handle needed by
+     * the caller - the handle is only kept so we can detect re-init above. */
     xTaskCreate(allystar_timing_sequence_task, "allystar_tcfg",
                 4096, NULL, 5, &timing_task_handle);
 }

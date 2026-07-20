@@ -64,7 +64,7 @@ static const char STATUS_PAGE_HTML[] =
     "<head>\n"
     "<meta charset=\"UTF-8\">\n"
     "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
-    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%234ec9b0'/%3E%3Cstop%20offset='1'%20stop-color='%237aa2f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle%20cx='32'%20cy='32'%20r='28'%20fill='%230b1018'%20stroke='url(%23g)'%20stroke-width='4'/%3E%3Ccircle%20cx='32'%20cy='11'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='53'%20cy='32'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='32'%20cy='53'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='11'%20cy='32'%20r='2'%20fill='%234ec9b0'/%3E%3Cline%20x1='32'%20y1='32'%20x2='32'%20y2='16'%20stroke='%23e6edf7'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Cline%20x1='32'%20y1='32'%20x2='44'%20y2='32'%20stroke='%237aa2f7'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='3'%20fill='%23e6edf7'/%3E%3Ccircle%20cx='50'%20cy='14'%20r='7'%20fill='%230b1018'/%3E%3Ccircle%20cx='50'%20cy='14'%20r='5'%20fill='%2350fa7b'/%3E%3C/svg%3E\">\n"
+    "<link rel=\"icon\" type=\"image/svg+xml\" href=\"data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Ccircle%20cx='32'%20cy='32'%20r='30'%20fill='%2316a34a'%20stroke='%2386efac'%20stroke-width='2.5'/%3E%3Cg%20stroke='%23dcfce7'%20stroke-width='2.5'%20stroke-linecap='round'%20opacity='0.75'%3E%3Cline%20x1='32'%20y1='7'%20x2='32'%20y2='12'/%3E%3Cline%20x1='32'%20y1='52'%20x2='32'%20y2='57'/%3E%3Cline%20x1='7'%20y1='32'%20x2='12'%20y2='32'/%3E%3Cline%20x1='52'%20y1='32'%20x2='57'%20y2='32'/%3E%3C/g%3E%3Cg%20stroke='%23ffffff'%20stroke-linecap='round'%20fill='none'%3E%3Cpath%20d='M%2032%2032%20L%2023%2026'%20stroke-width='5.5'/%3E%3Cpath%20d='M%2032%2032%20L%2043%2021'%20stroke-width='5'/%3E%3C/g%3E%3Ccircle%20cx='32'%20cy='32'%20r='3.5'%20fill='%23ffffff'/%3E%3C/svg%3E\">\n"
     "<title>PTP Master &mdash; ESP32-P4</title>\n"
     "<style>\n"
     "  :root {\n"
@@ -158,6 +158,7 @@ static const char STATUS_PAGE_HTML[] =
     "  .row .value.warn{color:var(--warn);} .row .value.err{color:var(--err);}\n"
     "  .row .value.info{color:var(--info);} .row .value.accent{color:var(--accent);}\n"
     "  .row .value.purple{color:var(--purple);}\n"
+    "  .row .value.hostname{max-width:220px;min-width:0;overflow-wrap:anywhere;line-height:1.25;}\n"
     "\n"
     "  .chip { display:inline-block; padding:2px 8px; border-radius:4px;\n"
     "          font-family:var(--mono); font-size:11px; letter-spacing:0.5px;\n"
@@ -314,9 +315,9 @@ static const char STATUS_PAGE_HTML[] =
     "        <div class=\"sub\" id=\"v_freq_sub\">Kp=0.4 &middot; Ki=0.3</div>\n"
     "      </div>\n"
     "      <div class=\"metric\">\n"
-    "        <div class=\"metric-head\"><span class=\"icon\">&#x1F6F0;&#xFE0F;</span><span class=\"label\">GPS / PPS</span></div>\n"
-    "        <div class=\"big\" id=\"v_gps\">&mdash;</div>\n"
-    "        <div class=\"sub\" id=\"v_gps_sub\">&mdash;</div>\n"
+    "        <div class=\"metric-head\"><span class=\"icon\">&#x1F6F0;&#xFE0F;</span><span class=\"label\">GNSS / PPS</span></div>\n"
+    "        <div class=\"big\" id=\"v_gnss\">&mdash;</div>\n"
+    "        <div class=\"sub\" id=\"v_gnss_sub\">&mdash;</div>\n"
     "      </div>\n"
     "    </div>\n"
     "\n"
@@ -364,8 +365,8 @@ static const char STATUS_PAGE_HTML[] =
     "        <div class=\"row\"><span class=\"icon\">&#x1F9F1;</span>\n"
     "          <span class=\"label\">Largest free block</span>\n"
     "          <span class=\"value\" id=\"v_heap_lfb\">&mdash;</span></div>\n"
-    "        <div class=\"row\"><span class=\"icon\">&#x1F3DB;&#xFE0F;</span>\n"
-    "          <span class=\"label\">RETENT_RAM<span class=\"hint\">@ 0x4FF178D0</span></span>\n"
+    "        <div class=\"row\" title=\"Internal SRAM that can be accessed by the ESP32-P4 retention-DMA engine. ESP-IDF may also use it as ordinary heap memory.\"><span class=\"icon\">&#x1F3DB;&#xFE0F;</span>\n"
+    "          <span class=\"label\">Retention-capable RAM<span class=\"hint\">MALLOC_CAP_RETENTION &middot; free / total</span></span>\n"
     "          <span class=\"value dim\" id=\"v_retent\">&mdash;</span></div>\n"
     "        <div class=\"row\"><span class=\"icon\">&#x1F4D0;</span>\n"
     "          <span class=\"label\">RAM regions</span>\n"
@@ -389,6 +390,9 @@ static const char STATUS_PAGE_HTML[] =
     "        <div class=\"row\"><span class=\"icon\">&#x1F50C;</span>\n"
     "          <span class=\"label\">Link status</span>\n"
     "          <span class=\"value\" id=\"v_link\">&mdash;</span></div>\n"
+    "        <div class=\"row\"><span class=\"icon\">&#x1F3E0;</span>\n"
+    "          <span class=\"label\">Hostname<span class=\"hint\">DHCP / DNS / mDNS identity</span></span>\n"
+    "          <span class=\"value accent hostname\" id=\"v_hostname\">&mdash;</span></div>\n"
     "        <div class=\"row\"><span class=\"icon\">&#x1F310;</span>\n"
     "          <span class=\"label\">IP address<span class=\"hint\" id=\"v_ip_hint\">&mdash;</span></span>\n"
     "          <span class=\"value info\" id=\"v_ip\">&mdash;</span></div>\n"
@@ -424,7 +428,7 @@ static const char STATUS_PAGE_HTML[] =
     "          <span class=\"label\">Clock ID</span>\n"
     "          <span class=\"value dim\" id=\"v_clockid\">&mdash;</span></div>\n"
     "        <div class=\"row\"><span class=\"icon\">&#x1F551;</span>\n"
-    "          <span class=\"label\">UTC time<span class=\"hint\">from GPS &middot; gmtime_r</span></span>\n"
+    "          <span class=\"label\">UTC time<span class=\"hint\">from GNSS &middot; gmtime_r</span></span>\n"
     "          <span class=\"value info\" id=\"v_utc\">&mdash;</span></div>\n"
     "        <div class=\"row\"><span class=\"icon\">&#x23F3;</span>\n"
     "          <span class=\"label\">TAI &minus; UTC offset</span>\n"
@@ -476,8 +480,8 @@ static const char STATUS_PAGE_HTML[] =
     "          <span class=\"label\">Post-holdover settled</span>\n"
     "          <span class=\"value\" id=\"v_settled\">&mdash;</span></div>\n"
     "        <div class=\"row\"><span class=\"icon\">&#x1F6F0;&#xFE0F;</span>\n"
-    "          <span class=\"label\">GPS last update</span>\n"
-    "          <span class=\"value\" id=\"v_gpsage\">&mdash;</span></div>\n"
+    "          <span class=\"label\">GNSS last update</span>\n"
+    "          <span class=\"value\" id=\"v_gnssage\">&mdash;</span></div>\n"
     "        <div class=\"row\"><span class=\"icon\">&#x1F4A1;</span>\n"
     "          <span class=\"label\">PPS LED<span class=\"hint\">GPIO 3 &middot; 50 ms pulse</span></span>\n"
     "          <span class=\"value info\" id=\"v_ppsled\">&mdash;</span></div>\n"
@@ -556,7 +560,7 @@ static const char STATUS_PAGE_HTML[] =
     "  \"ptp_rx\":   { icon:\"\\u{1F4E5}\", role:\"L2TAP RX, hw timestamps, dispatch\" },\n"
     "  \"ptp_tx\":   { icon:\"\\u{1F4E4}\", role:\"Sync / Announce\" },\n"
     "  \"dresp\":    { icon:\"\\u{1F4EC}\", role:\"Delay_Resp worker\" },\n"
-    "  \"gps\":      { icon:\"\\u{1F6F0}\\uFE0F\", role:\"NMEA parser \\u00B7 UART1 @ 9600\" },\n"
+    "  \"gnss\":      { icon:\"\\u{1F6F0}\\uFE0F\", role:\"NMEA parser \\u00B7 UART1 @ 9600\" },\n"
     "  \"servo\":    { icon:\"\\u2699\\uFE0F\", role:\"PI servo, freq/step discipline\" },\n"
     "  \"pps_task\": { icon:\"\\u{1F551}\", role:\"1-PPS edge handler, PHC capture\" },\n"
     "  \"pps_led\":  { icon:\"\\u{1F4A1}\", role:\"PPS visual indicator (GPIO 3)\" },\n"
@@ -643,10 +647,10 @@ static const char STATUS_PAGE_HTML[] =
     "    setText(\"v_freq\", \"\\u2014\");\n"
     "  }\n"
     "\n"
-    "  /* Hero — GPS */\n"
-    "  setText(\"v_gps\", d.gps_fix ? \"FIX OK\" : \"NO FIX\");\n"
-    "  $(\"v_gps\").style.color = d.gps_fix ? \"var(--ok)\" : \"var(--err)\";\n"
-    "  setText(\"v_gps_sub\", \"PPS count: \" + (d.pps_count != null ? d.pps_count.toLocaleString() : \"\\u2014\"));\n"
+    "  /* Hero — GNSS */\n"
+    "  setText(\"v_gnss\", d.gnss_fix ? \"FIX OK\" : \"NO FIX\");\n"
+    "  $(\"v_gnss\").style.color = d.gnss_fix ? \"var(--ok)\" : \"var(--err)\";\n"
+    "  setText(\"v_gnss_sub\", \"PPS count: \" + (d.pps_count != null ? d.pps_count.toLocaleString() : \"\\u2014\"));\n"
     "\n"
     "  /* Device */\n"
     "  setText(\"v_chip\", (d.chip || \"ESP32-P4\") + \" rev \" + (d.chip_rev || \"v1.0\"));\n"
@@ -665,7 +669,9 @@ static const char STATUS_PAGE_HTML[] =
     "  setText(\"v_heap_free\", fmtKB(d.heap_free || 0));\n"
     "  setText(\"v_heap_min\",  fmtKB(d.heap_min  || 0));\n"
     "  setText(\"v_heap_lfb\",  fmtKB(d.heap_lfb  || 0));\n"
-    "  setText(\"v_retent\",    (d.retent_kb || 141) + \" KiB\");\n"
+    "  const retentTotal = d.retent_total != null ? d.retent_total : ((d.retent_kb || 0) * 1024);\n"
+    "  const retentFree  = d.retent_free  != null ? d.retent_free  : retentTotal;\n"
+    "  setText(\"v_retent\", fmtKB(retentFree) + \" free / \" + fmtKB(retentTotal));\n"
     "  setText(\"v_ram\",       (d.ram1_kb || 384) + \" + \" + (d.ram2_kb || 18) + \" KiB\");\n"
     "  setText(\"v_rtcram\",    (d.rtc_kb || 31) + \" KiB\");\n"
     "  setText(\"v_tcm\",       (d.tcm_kb || 7) + \" KiB\");\n"
@@ -679,6 +685,8 @@ static const char STATUS_PAGE_HTML[] =
     "  /* Network */\n"
     "  const linkUp = !!d.link_up;\n"
     "  $(\"v_link\").innerHTML = linkUp ? '<span class=\"chip ok\">UP</span>' : '<span class=\"chip err\">DOWN</span>';\n"
+    "  setText(\"v_hostname\", d.hostname || \"\\u2014\");\n"
+    "  if (d.hostname) document.title = d.hostname + \" \\u2014 PTP Master\";\n"
     "  setText(\"v_ip\", d.ip || \"(no IP)\");\n"
     "  setText(\"v_ip_hint\", d.ip_source ? d.ip_source : \"DHCP/static\");\n"
     "  setText(\"v_mac\", d.mac || \"\\u2014\");\n"
@@ -739,7 +747,7 @@ static const char STATUS_PAGE_HTML[] =
     "  const stl = $(\"v_settled\");\n"
     "  setText(\"v_settled\", d.settled ? \"yes\" : \"no\");\n"
     "  stl.className = \"value \" + (d.settled ? \"ok\" : \"warn\");\n"
-    "  setText(\"v_gpsage\", d.gps_age_s != null ? (d.gps_age_s + \" s ago\") : \"\\u2014\");\n"
+    "  setText(\"v_gnssage\", d.gnss_age_s != null ? (d.gnss_age_s + \" s ago\") : \"\\u2014\");\n"
     "  setText(\"v_ppsled\", d.pps_led_active ? \"blinking\" : \"idle\");\n"
     "\n"
     "  /* Tasks */\n"
@@ -928,7 +936,8 @@ static const char STATUS_PAGE_HTML[] =
  *   "heap_min":          398336,   // bytes -- heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)
  *   "heap_lfb":          262144,   // bytes -- heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)
  *   "heap_leak":         0,        // bytes delta vs. boot baseline
- *   "retent_kb":         141,
+ *   "retent_total":     172032,   // bytes with MALLOC_CAP_RETENTION
+ *   "retent_free":      145120,   // currently free bytes in that capability heap
  *   "ram1_kb":           384,
  *   "ram2_kb":           18,
  *   "rtc_kb":            31,
@@ -939,6 +948,7 @@ static const char STATUS_PAGE_HTML[] =
  *   "ip":                "192.168.5.142",
  *   "ip_source":         "DHCP lease",
  *   "mac":               "30:ED:A0:E2:33:D3",
+ *   "hostname":          "radiant-captain-james-smith",
  *   "emac_restarts":     0,        // g_emac_restart_count
  *   "promiscuous":       false,
  *   "wdt_healthy":       true,
@@ -969,14 +979,14 @@ static const char STATUS_PAGE_HTML[] =
  *   "phc_residual_ns":   42,            // g_phc_offset_ns
  *   "holdover_timeout_s":5,             // HOLDOVER_TIMEOUT_SEC
  *   "settled":           true,          // g_settled_after_holdover
- *   "gps_age_s":         2,
- *   "gps_fix":           true,
+ *   "gnss_age_s":         2,
+ *   "gnss_fix":           true,
  *   "pps_led_active":    true,
  *
  *   "tasks": [
  *     { "name": "ptp_rx",   "priority": 7, "stack_bytes": 8192, "hwm_bytes": 4734, "core": 0 },
  *     { "name": "ptp_tx",   "priority": 5, "stack_bytes": 8192, "hwm_bytes": 5298, "core": 0 },
- *     { "name": "gps",      "priority": 5, "stack_bytes": 6144, "hwm_bytes": 2752, "core": 1 },
+ *     { "name": "gnss",      "priority": 5, "stack_bytes": 6144, "hwm_bytes": 2752, "core": 1 },
  *     { "name": "servo",    "priority": 6, "stack_bytes": 6144, "hwm_bytes": 3211, "core": 1 },
  *     { "name": "pps_task", "priority": 7, "stack_bytes": 4096, "hwm_bytes": 2868, "core": 1 },
  *     { "name": "pps_led",  "priority": 1, "stack_bytes": 2048, "hwm_bytes": 1600, "core": 0 },
