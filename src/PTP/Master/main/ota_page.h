@@ -7,7 +7,7 @@
  *
  *  Project: https://github.com/Montecri/GNSSTimeServer
  *
- *  NOTE: Auto-generated from ota.html. Do not edit by hand — re-run
+ *  NOTE: Auto-generated from ota.html. Do not edit by hand -- re-run
  *        build_ota_page.py whenever ota.html changes, then rebuild & flash.
  * ============================================================================ */
 

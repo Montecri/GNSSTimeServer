@@ -6,13 +6,13 @@
  * ═════════════════════════════════════════════════════════════════════════
  *
  * IEEE 1588-2008, Annex F (L2/Ethernet transport).
- * Target board : ESP32-P4-Function-EV-Board
+ * Target board : Guition JC-ESP32P4-M3-DEV board
  * ESP-IDF      : 5.5.4
  *
  * Build target: PTPv2 GRANDMASTER (master-only firmware).
  *
- * GPS-disciplined grandmaster: drives the PHC from a 1-PPS edge captured on
- * the GPS module, transmits Sync / Follow_Up / Announce, and answers
+ * GNSS-disciplined grandmaster: drives the PHC from a 1-PPS edge captured on
+ * the GNSS module, transmits Sync / Follow_Up / Announce, and answers
  * Delay_Req from connected slaves.
  *
  * High-level structure of this file (top to bottom):
@@ -28,11 +28,11 @@
  *   - PTP message handlers (Delay_Resp, Sync/FollowUp, Announce)
  *   - NMEA parsers (ZDA, RMC, GSV, GSA)
  *   - PPS ISR + pps_task + servo_task  (the timing core)
- *   - Background tasks (gps, gps_signal, ptp_rx/tx, heap, watchdog)
+ *   - Background tasks (gnss, gnss_signal, ptp_rx/tx, heap, watchdog)
  *   - LED status indicator
  *   - OLED display + button
  *   - Network init (DHCP fallback, Ethernet, L2TAP, PHC start)
- *   - Hardware init (GPS UART, PPS GPIO)
+ *   - Hardware init (GNSS UART, PPS GPIO)
  *   - app_main
  *
  * ─────────────────────────────────────────────────────────────────────────
@@ -44,14 +44,16 @@
  * the current structure is already optimized for sub-microsecond accuracy.
  *
  * What GNSS timing mode buys:
- *   - Holdover stability: with much lower PPS jitter, short GPS outages leave
+ *   - Holdover stability: with much lower PPS jitter, short GNSS outages leave
  *     the master with a far better free-running clock (timing-mode receivers
  *     typically advertise <100 ns holdover for several minutes vs. hundreds
  *     of ns in nav mode).
- *   - Headroom to tighten servo gains. The current Kp=0.4 / Ki=0.3 was tuned
- *     around ~100-200 ns PPS jitter; with ~10 ns PPS jitter Kp=0.6 / Ki=0.4
- *     and faster lock acquisition would work without overshoot. Not needed —
- *     current performance is already excellent — but the headroom exists.
+ *   - Headroom to tighten servo gains. The current acquisition-phase gains
+ *     (SERVO_KP=0.4 / SERVO_KI=0.3, used only in SERVO_ACQUIRING; steady-state
+ *     uses the much slower KP_SLOW/KI_SLOW pair) were tuned around ~100-200 ns
+ *     PPS jitter; with ~10 ns PPS jitter Kp=0.6 / Ki=0.4 and faster lock
+ *     acquisition would work without overshoot. Not needed — current
+ *     performance is already excellent — but the headroom exists.
  *   - A shorter holdover threshold (currently 5 s) could be used safely
  *     without false alarms: with timing-mode PPS, missing 2 PPS edges
  *     genuinely indicates a problem rather than jitter eating a sample.
@@ -110,6 +112,7 @@
 #include "u8g2_esp32_hal.h"
 
 #include "allystar_timing.h"
+#include "mac_hostname.h" /* deterministic MAC -> hostname (components/mac_hostname) */
 
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION: Configuration #defines
@@ -138,9 +141,31 @@
 #define STATIC_IP_NETMASK ESP_IP4TOADDR(255, 255, 255, 0)
 #define STATIC_IP_GATEWAY ESP_IP4TOADDR(192, 168, 5, 1)
 
-/* ─── PTP protocol (IEEE 1588-2008) ─── */
+/* ─── PTP protocol (IEEE 1588-2008) ───
+ * Sync cadence is 1 Hz, Announce 0.5 Hz. ptp_tx_task ticks at
+ * PTP_SYNC_INTERVAL_MS and sends an Announce every PTP_ANNOUNCE_DIV ticks.
+ *
+ * NOTE: the on-wire logMessageInterval fields in build_ptp_header() calls
+ * (0 for Sync/FollowUp, 1 for Announce) are hardcoded to match these
+ * defaults (log2(1s)=0, log2(2s)=1). If you change the intervals to values
+ * that no longer satisfy log2(interval_sec) ∈ {0,1}, update those literals
+ * in send_sync_and_followup() and send_announce() as well so slaves see
+ * the advertised cadence match the actual one. */
 #define PTP_SYNC_INTERVAL_MS 1000
 #define PTP_ANNOUNCE_INTERVAL_MS 2000
+
+/* Announce-every-N-Sync-ticks divisor, computed at compile time.
+ * Round to nearest so a non-integer ratio picks the closest viable cadence. */
+#define PTP_ANNOUNCE_DIV \
+    (((PTP_ANNOUNCE_INTERVAL_MS) + (PTP_SYNC_INTERVAL_MS) / 2) / (PTP_SYNC_INTERVAL_MS))
+
+_Static_assert(PTP_SYNC_INTERVAL_MS > 0,
+               "PTP_SYNC_INTERVAL_MS must be positive");
+_Static_assert(PTP_ANNOUNCE_INTERVAL_MS >= PTP_SYNC_INTERVAL_MS,
+               "PTP_ANNOUNCE_INTERVAL_MS must be >= PTP_SYNC_INTERVAL_MS "
+               "(the tx task ticks at the Sync rate)");
+_Static_assert(PTP_ANNOUNCE_DIV >= 1,
+               "PTP_ANNOUNCE_DIV must be >= 1 (check the two intervals)");
 // Defined at task creation
 // #define PTP_TASK_PRIORITY 5
 #define PTP_DOMAIN 0
@@ -171,17 +196,17 @@
 #define SLAVE_TRACK_MAX 8      /* max simultaneously-tracked slaves */
 #define SLAVE_TIMEOUT_MS 30000 /* a slave is "active" if seen <30s ago */
 
-/* ─── GPS UART + PPS pins ─── */
-#define GPS_UART_NUM UART_NUM_1
-#define GPS_TX_PIN 33
-#define GPS_RX_PIN 32
+/* ─── GNSS UART + PPS pins ─── */
+#define GNSS_UART_NUM UART_NUM_1
+#define GNSS_TX_PIN 33
+#define GNSS_RX_PIN 32
 #define PPS_GPIO 20
 
 /* ─── Holdover ─── */
 #define HOLDOVER_TIMEOUT_SEC 5
 
 /* Post-holdover settling: keep advertising clockClass 7 until the servo
- * has been continuously LOCKED for this long after GPS recovery. Prevents
+ * has been continuously LOCKED for this long after GNSS recovery. Prevents
  * downstream ptp4l clients from reacquiring/railing their servo while our
  * PHC is still settling from a COARSE STEP. */
 #define POST_HOLDOVER_SETTLE_MS 30000 /* 30 s */
@@ -194,7 +219,8 @@
  * PID tuning — KD term added to handle thermal transients.
  *
  *   KP_SLOW = 0.05     — proportional, responds to current averaged offset
- *   KI_SLOW = 0.001    — integral, learns crystal drift (~50 ms timescale)
+ *   KI_SLOW = 0.001    — integral, learns crystal drift (~1000 s / ~17 min
+ *                        timescale: 1/KI at the 1 Hz sample rate)
  *   KD_SLOW = 2.0      — derivative, reacts to rate of drift change
  *   D_WINDOW = 10      — derivative computed as slope of averaged offset
  *                        over the last 10 seconds, smoothing noise spikes.
@@ -211,7 +237,7 @@
  *
  * Steady-state (±300 ns receiver noise, 1 hour after settling, partially
  * obstructed sky view, urban jungle):
- *   30% of time within ±300 ns of true GPS time
+ *   30% of time within ±300 ns of true GNSS time
  *   74% of time within ±1 µs
  *   89% of time within ±2 µs
  *   Mean error -74 ns.
@@ -249,12 +275,24 @@
  * offset by under 1 µs/sample. A 2 µs gate excludes the settling phase
  * (where consecutive samples may differ by 100+ µs).
  *
- * Threshold 8 samples (= 8 seconds): with both phase + freq gated, this
- * is solid evidence of convergence without being painfully slow. */
+ * Threshold LOCK_THRESHOLD = 8, applied as `stable_count > LOCK_THRESHOLD` in
+ * servo_task, so lock is actually declared on the 9th consecutive sample
+ * (≈9 seconds): with both phase + freq gated, this is solid evidence of
+ * convergence without being painfully slow. */
 #define LOCK_THRESHOLD 8
 #define LOCK_OFFSET_NS 5000LL
 #define LOCK_FREQ_DELTA_NS 2000LL
-#define MAX_STEP_NS 2000000000LL // only allow huge steps pre-lock
+
+/* ACQUIRING sanity rail. A pre-lock offset beyond this bound cannot come
+ * from normal acquisition (worst legitimate case is ~2.5 s: coarse-step
+ * granularity plus a stale sentence_offset); it means the PHC or the GNSS
+ * reference moved out from under the acquisition — a PPS edge captured
+ * during an EMAC restart window, a receiver power-cycle, or a garbage
+ * coarse step. ACQUIRING has no other exit path, so servo_task restarts
+ * acquisition from UNLOCKED after ACQ_RAIL_STRIKES consecutive
+ * beyond-rail samples (a lone outlier is skipped, not punished). */
+#define MAX_STEP_NS 10000000000LL /* 10 s */
+#define ACQ_RAIL_STRIKES 3
 
 /* Consecutive HARD_REJECTs in SERVO_LOCKED that force a full re-acquire.
  * Defined here (not inside servo_task) so render_screen_servo, which is
@@ -262,6 +300,14 @@
 #define REJECT_STREAK_REACQUIRE 45
 
 /* ─── Servo offset filtering windows ───
+ *
+ * NOTE: the median filter described in the following paragraph is currently
+ * NOT WIRED INTO THE SIGNAL PATH — the servo runs directly off the 32-sample
+ * running-mean averager below (g_avg_ring). MEDIAN_WINDOW, g_offset_history[],
+ * and median_filter_reset() are retained as dormant scaffolding for a possible
+ * future first-stage filter; the reset calls scattered through servo_task are
+ * effectively no-ops. The commentary is kept for context if the filter is
+ * ever restored.
  *
  * Median filter window. 9 samples kills bursts of up to 4 consecutive bad
  * PPS edges (the median is only corrupted when 5+ of 9 samples are bad).
@@ -407,6 +453,7 @@ typedef struct
     uint16_t variance;
     uint8_t priority2;
     uint8_t clock_id[8];
+    uint16_t steps_removed; /* host order; 0 for the local (GM) dataset */
 } bmca_dataset_t;
 
 /* ─── Servo state machine ─── */
@@ -435,15 +482,22 @@ typedef struct
     struct timespec rx_hw_ts;
     ptp_port_id_t req_port_id; /* echoed as requestingPortIdentity */
     uint16_t req_seq;          /* host order */
+    int64_t req_correction;    /* Delay_Req correctionField, RAW network
+                                * byte order — echoed verbatim into the
+                                * Delay_Resp (IEEE 1588-2008 11.3.2 c).
+                                * E2E transparent clocks in the path add
+                                * their residence time here; dropping it
+                                * (the old behavior: always 0) silently
+                                * biased every slave's path delay. */
 } delay_resp_job_t;
 
 /* ─── LED status states ─── */
 typedef enum
 {
     LED_STATE_NO_LINK = 0, // Ethernet not up
-    LED_STATE_ACQUIRING,   // link up, waiting for GPS / servo not locked
+    LED_STATE_ACQUIRING,   // link up, waiting for GNSS / servo not locked
     LED_STATE_LOCKED,      // servo locked, time is good
-    LED_STATE_HOLDOVER,    // was locked, GPS lost, drifting
+    LED_STATE_HOLDOVER,    // was locked, GNSS lost, drifting
     LED_STATE_FAULT,       // unrecoverable error
 } led_state_t;
 
@@ -454,7 +508,12 @@ typedef struct
      * Cleared when a new sentence-1 arrives, accumulated as later
      * sentences arrive, snapshotted to globals on the final sentence. */
     uint8_t snr[GSV_MAX_SVS_PER_TALKER]; /* 0 = invalid / not reported */
-    int count;                           /* SVs accumulated so far */
+    int count;                           /* last-seen sv_in_view field from the
+                                          * GSV sentence header (i.e. what the
+                                          * receiver claims for this group);
+                                          * the true accumulated count is
+                                          * derived by scanning snr[] in
+                                          * gsv_publish_snapshot */
     int total_expected;                  /* from "sats in view" field */
 } gsv_acc_t;
 
@@ -483,7 +542,7 @@ static _Atomic bool g_l2tap_ready = false;
 /* Timing-core readiness: the EMAC driver is started, the PHC is running, and
  * L2TAP is bound. This depends ONLY on the driver being started (esp_eth_start),
  * NOT on a peer being connected. The servo and pps tasks gate on this so the
- * clock disciplines to GPS at power-on regardless of whether a slave/link is
+ * clock disciplines to GNSS at power-on regardless of whether a slave/link is
  * present. PTP packet I/O (rx/tx tasks) gates on g_link_up instead, since that
  * genuinely needs a peer on the wire. */
 static _Atomic bool g_phc_ready = false;
@@ -501,6 +560,20 @@ static _Atomic uint8_t g_display_screen = 0; // 0..DISPLAY_NUM_SCREENS-1
 /* ─── PTP identity / sequence counters ─── */
 static uint8_t g_clock_id[8];
 static uint8_t g_src_mac[6];
+
+/* MAC-derived device identity.  Populated once in ethernet_init() and
+ * installed on the netif immediately after esp_eth_start() in app_main.
+ * Read-only after that, no locking needed.  Persists across cable
+ * unplug/replug and DHCP restarts (netif property, not link property).
+ * See components/mac_hostname/INTEGRATION.md for the full rationale.
+ *
+ *   g_hostname   - lower-dashed form given to DHCP/DNS/mDNS
+ *                  (needs CONFIG_LWIP_MAX_HOSTNAME_LEN >= 64)
+ *   g_host_line1 - "first-middle" (<= 20 chars) for the 21-col OLED
+ *   g_host_line2 - "last"         (<= 12 chars) for the 21-col OLED    */
+static char g_hostname[MAC_HOSTNAME_BUF_LEN];
+static char g_host_line1[24];
+static char g_host_line2[24];
 static uint16_t g_sync_seq = 0;
 static uint16_t g_announce_seq = 0;
 
@@ -572,13 +645,12 @@ static uint32_t ptp_sync_jitter_stats(int64_t *out_min, int64_t *out_max,
     return count;
 }
 
-/* ─── GPS time + PPS edge state ─── */
+/* ─── GNSS time + PPS edge state ─── */
 static volatile uint64_t g_last_pps_phc_ns = 0;
-static volatile bool g_pps_seen = false;
-static time_t g_gps_seconds = 0;
-static bool g_gps_valid = false;
+static time_t g_gnss_seconds = 0;
+static bool g_gnss_valid = false;
 static int g_utc_offset = 37; // TAI - UTC (update if leap second changes)
-static portMUX_TYPE g_gps_spinlock = portMUX_INITIALIZER_UNLOCKED;
+static portMUX_TYPE g_gnss_spinlock = portMUX_INITIALIZER_UNLOCKED;
 
 /* ISR-captured PPS PHC timestamp (sampled inside the PPS ISR).
  * Written by pps_isr_handler, read by pps_task. On the dual-core P4 these can
@@ -596,6 +668,16 @@ static SemaphoreHandle_t g_pps_sem;
 static portMUX_TYPE g_servo_spinlock = portMUX_INITIALIZER_UNLOCKED;
 static double g_integral = 0;
 static double g_freq_ppb = 0;
+/* Last frequency adjustment ACTUALLY WRITTEN to the PHC, in ppb. Lock-free
+ * mirror for emac_restart_preserve_phc (watchdog task): g_freq_ppb is a
+ * software double (two 32-bit stores on RV32) written by servo_task WITHOUT
+ * any lock, so a cross-core reader can tear it — and what the restart needs
+ * to re-apply is precisely the int32 the hardware last received, not the
+ * servo's internal double. Updated only when the ADJ ioctl actually went
+ * through (servo_phc_ioctl returned true). Deliberately NOT reset on
+ * re-acquire: the hardware keeps its last adjustment until the next ADJ
+ * write, and this mirror tracks the hardware. */
+static _Atomic int32_t g_freq_ppb_hw = 0;
 static volatile int64_t g_last_offset = 0;
 static volatile uint32_t g_pps_edge_count = 0;
 
@@ -605,10 +687,22 @@ static volatile uint32_t g_pps_edge_count = 0;
  * the streak self-healed back to zero. Never reset on re-acquire — boot only. */
 static volatile uint32_t g_total_rejects = 0;
 
-static volatile uint64_t g_gps_pps_ns = 0;
-static volatile bool g_gps_pps_valid = false;
+static volatile uint64_t g_gnss_pps_ns = 0;
+static volatile bool g_gnss_pps_valid = false;
 static volatile bool g_phc_stepped = false;
 static volatile bool g_phc_residual_measured = false;
+
+/* Which second the time-bearing NMEA sentence describes, relative to the PPS
+ * edge it arrives around (0 = the sentence precedes its edge, 1/2 = it
+ * trails; -1 = not yet determined). Determined once after each COARSE STEP
+ * and consumed on every edge to build the GNSS time target (see pps_task).
+ * Written by pps_task under g_servo_spinlock; servo_task resets it to -1
+ * (under the same lock) in the true-PPS-outage re-acquire path: a receiver
+ * power-cycle or swap can change sentence timing, and a stale value there
+ * would make the whole acquisition converge exactly one second off TAI.
+ * Was previously function-static in pps_task — unreachable from the
+ * re-acquire path, which is how it survived receiver power-cycles. */
+static volatile int g_sentence_offset = -1;
 static volatile int64_t g_phc_offset_ns = 0; /* measured steady-state offset */
 
 /* Live reject-streak counter for OLED screen 2. Mirrors servo_task's
@@ -646,12 +740,12 @@ static int64_t g_qual_raw_max = INT64_MIN;
 static uint8_t g_qual_raw_samples = 0; /* counter so we reset bounds periodically */
 
 /* ─── Holdover / post-holdover settling ─── */
-static time_t g_last_gps_update = 0;
+static time_t g_last_gnss_update = 0;
 static bool g_holdover = true;
 static volatile int64_t g_lock_acquired_ms = 0; /* esp_timer ms when SERVO_LOCKED entered */
 static volatile bool g_settled_after_holdover = false;
 
-/* Latches true the first time the servo reaches SERVO_LOCKED with valid GPS
+/* Latches true the first time the servo reaches SERVO_LOCKED with valid GNSS
  * time since boot. Until then the PHC has never held real time, so we must
  * advertise clockClass 248 (never-synchronized) rather than 7 (holdover).
  * Once latched it stays true for the rest of this power cycle: a clock that
@@ -683,7 +777,6 @@ static _Atomic uint32_t g_delay_resp_drops = 0;
 #define DELAY_RESP_Q_DEPTH 64
 
 /* ─── LED status ─── */
-static volatile uint32_t g_pps_led_pulse_seq = 0;
 /* Single shared state — written by app code, read by LED task. _Atomic
  * gives lock-free safe reads/writes on a 32-bit value. */
 static _Atomic led_state_t s_led_state = LED_STATE_NO_LINK;
@@ -693,22 +786,22 @@ static volatile int64_t g_lock_start_ms = 0; /* when servo entered LOCKED (lock-
 static volatile int64_t g_boot_time_ms = 0;  /* boot time (uptime display) */
 
 /* ─── GNSS signal-quality public state ───
- * Read by OLED screen 3 and gps_signal_task; populated by parse_gsv /
+ * Read by OLED screen 3 and gnss_signal_task; populated by parse_gsv /
  * parse_gsa / gsv_publish_snapshot. */
-static portMUX_TYPE g_gps_sig_lock = portMUX_INITIALIZER_UNLOCKED;
-static uint8_t g_gps_snr_avg = 0;
-static uint8_t g_gps_snr_min = 0;
-static uint8_t g_gps_snr_max = 0;
-static uint8_t g_gps_sv_in_view = 0;
-static uint8_t g_gps_sv_used = 0;
-static int64_t g_gps_sig_last_update_ms = 0;
+static portMUX_TYPE g_gnss_sig_lock = portMUX_INITIALIZER_UNLOCKED;
+static uint8_t g_gnss_snr_avg = 0;
+static uint8_t g_gnss_snr_min = 0;
+static uint8_t g_gnss_snr_max = 0;
+static uint8_t g_gnss_sv_in_view = 0;
+static uint8_t g_gnss_sv_used = 0;
+static int64_t g_gnss_sig_last_update_ms = 0;
 
 /* One GSV SNR accumulator per talker (see talker_index for the mapping). */
 static gsv_acc_t g_gsv_acc[GSV_TALKER_COUNT];
 
 /* PPS edge-to-edge jitter tracking. Captures the receiver's raw timing
  * noise BEFORE the servo processes it. pps_task pushes one sample per edge;
- * gps_signal_task reads and zeroes the accumulators every 30 s.
+ * gnss_signal_task reads and zeroes the accumulators every 30 s.
  *
  * The sample is (interval_ns - 1,000,000,000): zero = perfect 1 Hz cadence,
  * non-zero = receiver PPS jitter (plus a small contribution from PHC
@@ -763,7 +856,7 @@ static void display_task(void *arg);
 static void button_task(void *arg);
 static void render_screen_main(void);
 static void render_screen_servo(void);
-static void render_screen_gps(void);
+static void render_screen_gnss(void);
 static void render_screen_network(void);
 static void render_screen_timing_cfg(void);
 static void slave_track_seen(const uint8_t *mac);
@@ -836,6 +929,11 @@ static time_t my_timegm(struct tm *tm)
     return (time_t)days * 86400 + hour * 3600 + min * 60 + sec;
 }
 
+/* CURRENTLY UNUSED: the median filter arrays are never written or read
+ * outside this reset (grep for g_offset_history). Kept in place — along
+ * with the calls scattered through servo_task — as dormant scaffolding
+ * for a possible future first-stage filter. See the "Servo offset
+ * filtering windows" comment block in the configuration section. */
 static void median_filter_reset(void)
 {
     g_offset_history_count = 0;
@@ -893,7 +991,7 @@ static void build_local_dataset(bmca_dataset_t *ds)
 {
     ds->priority1 = 128;
 
-    // Dynamic depending on GPS lock + post-holdover settling + never-locked
+    // Dynamic depending on GNSS lock + post-holdover settling + never-locked
     uint8_t cc = advertised_clock_class();
     ds->clock_class = cc;
     /* accuracy: locked → 0x21 (~100 ns), holdover → 0x23, unknown → 0xFE */
@@ -903,6 +1001,7 @@ static void build_local_dataset(bmca_dataset_t *ds)
     ds->variance = 0xFFFF;
     ds->priority2 = 128;
     memcpy(ds->clock_id, g_clock_id, 8);
+    ds->steps_removed = 0; /* we ARE the grandmaster of this dataset */
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
@@ -985,12 +1084,13 @@ static void build_ptp_header(ptp_header_t *h, uint8_t msg_type, uint16_t msg_len
 static int l2tap_send_ptp(const void *ptp_payload, size_t ptp_len, struct timespec *tx_ts)
 {
     /* Fast-reject while emac_restart_preserve_phc() is mid-restart. Mirrors
-     * the servo_phc_ioctl pattern (see line 2040): a write through the
-     * L2TAP fd to a stopped EMAC is at best lost and at worst races the
-     * driver's internal descriptor teardown. The restart function ALSO
-     * takes g_l2tap_tx_mtx around its esp_eth_stop / esp_eth_start window,
-     * so a caller that passed this atomic check just before the restart
-     * began will drain its in-flight write() before stop() is called. */
+     * the servo_phc_ioctl pattern (same atomic-flag fast-reject): a write
+     * through the L2TAP fd to a stopped EMAC is at best lost and at worst
+     * races the driver's internal descriptor teardown. The restart function
+     * ALSO takes g_l2tap_tx_mtx around its esp_eth_stop / esp_eth_start
+     * window, so a caller that passed this atomic check just before the
+     * restart began will drain its in-flight write() before stop() is
+     * called. */
     if (atomic_load(&g_emac_restarting))
         return -1;
 
@@ -1069,6 +1169,25 @@ static int l2tap_send_ptp(const void *ptp_payload, size_t ptp_len, struct timesp
 
 static bool bmca_better(const bmca_dataset_t *a, const bmca_dataset_t *b)
 {
+    /* IEEE 1588-2008 data set comparison. When both datasets name the SAME
+     * grandmaster ("part 2", Figure 28), every GM-quality field is by
+     * definition equal and the decision falls to stepsRemoved — the path
+     * with fewer hops to that GM wins. This doubles as the anti-loop
+     * guard: an Announce relaying OUR OWN clock as grandmaster (a boundary
+     * clock echoing us back) carries stepsRemoved >= 1 and can never beat
+     * the local dataset's 0, so we keep mastership instead of going
+     * passive to our own reflection. (The full Figure 28 additionally
+     * tiebreaks on sender/receiver port identity when stepsRemoved are
+     * within 1 of each other; with a single port and no foreign-master
+     * table, "not better" — keep the current state — is the safe
+     * resolution of that tie.)
+     *
+     * With DIFFERENT grandmasters ("part 1", Figure 27), stepsRemoved is
+     * deliberately NOT compared: the standard decides purely on GM quality
+     * — priority1, class, accuracy, variance, priority2, then identity. */
+    if (memcmp(a->clock_id, b->clock_id, 8) == 0)
+        return a->steps_removed < b->steps_removed;
+
     if (a->priority1 != b->priority1)
         return a->priority1 < b->priority1;
     if (a->clock_class != b->clock_class)
@@ -1090,6 +1209,7 @@ static void announce_to_dataset(const ptp_announce_msg_t *ann, bmca_dataset_t *d
     ds->variance = ntohs(ann->grandmaster_clock_variance);
     ds->priority2 = ann->grandmaster_priority2;
     memcpy(ds->clock_id, ann->grandmaster_identity, 8);
+    ds->steps_removed = ntohs(ann->steps_removed);
 }
 
 static void bmca_update(const bmca_dataset_t *remote)
@@ -1229,10 +1349,6 @@ static int slave_active_count(void)
  * Announce with current clock-quality fields.
  * ═════════════════════════════════════════════════════════════════════════ */
 
-/* ─────────────────────────────────────────────────────────────────────────
- * Logic Functions
- * ───────────────────────────────────────────────────────────────────────── */
-
 /* Receive-thread half: validate, snapshot, enqueue. No logging, no send, no
  * heap — keep the receive loop free to take the next frame (including Sync /
  * Announce, which must not be starved by a Delay_Req flood). */
@@ -1247,6 +1363,7 @@ static void enqueue_delay_req(const uint8_t *ptp_payload, size_t len,
     job.rx_hw_ts = *rx_hw_ts;
     job.req_port_id = req->hdr.source_port_id; /* packed-struct copy */
     job.req_seq = ntohs(req->hdr.sequence_id);
+    job.req_correction = req->hdr.correction_field; /* raw, echoed verbatim */
 
     /* Timeout 0: under flood, drop rather than block the receive loop. A
      * dropped Delay_Resp costs the slave one delay sample — it simply tries
@@ -1304,6 +1421,13 @@ static void delay_resp_task(void *arg)
         build_ptp_header(&resp.hdr, PTP_MSG_DELAY_RESP, sizeof(ptp_delay_resp_msg_t),
                          job.req_seq, 0, 0, 0x03);
 
+        /* IEEE 1588-2008 11.3.2 c): the Delay_Resp carries the Delay_Req's
+         * correctionField (TC residence times accumulated on the request
+         * path). Both sides are on-wire big-endian and never interpreted
+         * here, so the raw copy IS the correct echo. build_ptp_header
+         * memset it to 0 just above — set it after. */
+        resp.hdr.correction_field = job.req_correction;
+
         encode_ptp_timestamp(&resp.receive_timestamp, &job.rx_hw_ts);
         resp.requesting_port_id = job.req_port_id;
 
@@ -1322,9 +1446,12 @@ static void send_sync_and_followup(void)
     build_ptp_header(&sync.hdr, PTP_MSG_SYNC, sizeof(ptp_sync_msg_t),
                      seq, PTP_FLAG_TWO_STEP, 0, 0x00);
 
-    // TX timestamp comes back synchronously in t1
+    /* TX timestamp comes back synchronously in t1. ret <= 0 covers both the
+     * explicit failure (-1) and the 0-bytes-accepted case: either way the
+     * Sync never hit the wire, and a Follow_Up for it would be an orphan
+     * carrying a fabricated timestamp. */
     int ret = l2tap_send_ptp(&sync, sizeof(sync), &t1);
-    if (ret < 0)
+    if (ret <= 0)
         return;
 
     bool used_fallback = false;
@@ -1366,15 +1493,21 @@ static void send_announce(void)
     // ✅ Build proper TimeProperties flags
     uint16_t flags = 0;
 
-    flags |= PTP_FLAG_UTC_OFFSET_VALID;
-
     /* Only assert PTP timescale + traceability once we've actually held real
      * time. A never-synchronized clock (clockClass 248) must not claim a
      * traceable PTP timescale — otherwise a slave that ignores clockClass
      * would still adopt the bogus free-running epoch. TIME/FREQ_TRACEABLE are
-     * asserted only when fully LOCKED (cc==6), never in holdover (cc==7). */
+     * asserted only when fully LOCKED (cc==6), never in holdover (cc==7).
+     *
+     * currentUtcOffsetValid rides the same gate: announcing "UTC offset
+     * valid" alongside an ARB timescale on a free-running epoch is
+     * contradictory (IEEE 1588-2008 8.2.4) — the 37 s constant means
+     * nothing until the timescale is real. LEAP59/61 are never asserted:
+     * leap-second scheduling is not available from this NMEA stream, and
+     * g_utc_offset is maintained manually (see its declaration). */
     if (locked_or_holdover)
     {
+        flags |= PTP_FLAG_UTC_OFFSET_VALID;
         flags |= PTP_FLAG_PTP_TIMESCALE;
         if (cc == 6)
         {
@@ -1400,7 +1533,7 @@ static void send_announce(void)
     ann.grandmaster_clock_class = cc;
     ann.grandmaster_clock_accuracy = (cc == 6) ? 0x21 : (cc == 7) ? 0x23
                                                                   : 0xFE;
-    /* time_source: GPS (0x20) only when fully locked; INTERNAL_OSCILLATOR
+    /* time_source: GNSS (0x20) only when fully locked; INTERNAL_OSCILLATOR
      * (0xA0) in holdover and while never-synchronized. */
     ann.time_source = (cc == 6) ? 0x20 : 0xA0;
 
@@ -1434,16 +1567,79 @@ static void send_announce(void)
  * per-talker into a per-talker buffer (g_gsv_acc), then emit a combined
  * snapshot when sentence == total.
  *
- * Data exposed to gps_signal_task (declared in the global-state section):
- *   g_gps_snr_avg     — avg C/N₀ across all SVs in view (dB-Hz)
- *   g_gps_snr_min     — worst SV C/N₀
- *   g_gps_snr_max     — best SV C/N₀
- *   g_gps_sv_in_view  — count of SVs reported by any constellation
- *   g_gps_sv_used     — count of SVs used in the position-fix solution (GSA)
+ * Data exposed to gnss_signal_task (declared in the global-state section):
+ *   g_gnss_snr_avg     — avg C/N₀ across all SVs in view (dB-Hz)
+ *   g_gnss_snr_min     — worst SV C/N₀
+ *   g_gnss_snr_max     — best SV C/N₀
+ *   g_gnss_sv_in_view  — count of SVs reported by any constellation
+ *   g_gnss_sv_used     — count of SVs used in the position-fix solution (GSA)
  * ═════════════════════════════════════════════════════════════════════════ */
 
 /* ─────────────────────────────────────────────────────────────────────────
- * gps_task helpers — protect g_gps_seconds writes
+ * NMEA line hygiene helpers
+ * ───────────────────────────────────────────────────────────────────────── */
+
+static int hexval(char c)
+{
+    if (c >= '0' && c <= '9')
+        return c - '0';
+    if (c >= 'A' && c <= 'F')
+        return c - 'A' + 10;
+    if (c >= 'a' && c <= 'f')
+        return c - 'a' + 10;
+    return -1;
+}
+
+/* Validate the "*XX" NMEA checksum (XOR of every byte between '$' and '*').
+ * Rejects lines with no '$', no '*', a malformed hex field, or a mismatch.
+ * Without this gate, a UART glitch that lands inside a digit passes every
+ * downstream range check and is consumed as truth — worst at COARSE STEP
+ * time, where a corrupted seconds value steps the PHC to the wrong second.
+ * The TAU1201's binary protocol frames and partial boot-time lines also
+ * flow through gnss_task's line assembler; they fail here and are dropped
+ * silently on purpose (logging would spam for the whole configurator run). */
+static bool nmea_checksum_ok(const char *line)
+{
+    if (line[0] != '$')
+        return false;
+    uint8_t sum = 0;
+    const char *p = line + 1;
+    while (*p && *p != '*')
+        sum ^= (uint8_t)*p++;
+    if (*p != '*')
+        return false;
+    int hi = hexval(p[1]);
+    int lo = (hi >= 0) ? hexval(p[2]) : -1; /* p[2] only read when p[1] is a hex digit */
+    if (lo < 0)
+        return false;
+    return sum == (uint8_t)((hi << 4) | lo);
+}
+
+/* Split a NUL-terminated NMEA sentence on commas, PRESERVING empty fields.
+ * strtok_r collapses ",," — silently renumbering every later field — and
+ * empty fields are routine in NMEA: unused GSA PRN slots, untracked GSV
+ * SNRs, empty RMC course on a stationary receiver. Modifies buf in place
+ * (each ',' becomes NUL) and stores up to max_fields pointers. Returns the
+ * number of fields stored (clamped to max_fields). */
+static int nmea_split(char *buf, char *fields[], int max_fields)
+{
+    if (max_fields <= 0)
+        return 0;
+    int n = 0;
+    fields[n++] = buf;
+    for (char *p = buf; *p && n < max_fields; p++)
+    {
+        if (*p == ',')
+        {
+            *p = '\0';
+            fields[n++] = p + 1;
+        }
+    }
+    return n;
+}
+
+/* ─────────────────────────────────────────────────────────────────────────
+ * gnss_task helpers — protect g_gnss_seconds writes
  * ───────────────────────────────────────────────────────────────────────── */
 static bool parse_zda(const char *line)
 {
@@ -1469,17 +1665,17 @@ static bool parse_zda(const char *line)
 
     time_t utc = my_timegm(&t);
 
-    /* Update GPS time only if RMC has confirmed fix is valid.
+    /* Update GNSS time only if RMC has confirmed fix is valid.
      * ZDA alone does not indicate fix status (NMEA spec) — many modules
      * continue emitting ZDA after fix loss with stale or coasting time. */
-    taskENTER_CRITICAL(&g_gps_spinlock);
-    bool fix_ok = g_gps_valid; /* set/cleared by parse_rmc only */
+    taskENTER_CRITICAL(&g_gnss_spinlock);
+    bool fix_ok = g_gnss_valid; /* set/cleared by parse_rmc only */
     if (fix_ok)
-        g_gps_seconds = utc;
-    taskEXIT_CRITICAL(&g_gps_spinlock);
+        g_gnss_seconds = utc;
+    taskEXIT_CRITICAL(&g_gnss_spinlock);
 
     if (fix_ok)
-        g_last_gps_update = time(NULL);
+        g_last_gnss_update = time(NULL);
 
     return true;
 }
@@ -1490,48 +1686,52 @@ static bool parse_rmc(const char *line)
     strncpy(buf, line, sizeof(buf));
     buf[sizeof(buf) - 1] = 0;
 
-    char *token, *saveptr;
-    int field = 0;
-    int hh = 0, mm = 0, ss = 0;
-    int day = 0, mon = 0, year = 0;
-    char status = 'V';
+    /* strip checksum after '*' (already verified by nmea_checksum_ok) */
+    char *star = strchr(buf, '*');
+    if (star)
+        *star = 0;
 
-    token = strtok_r(buf, ",", &saveptr);
-    while (token)
-    {
-        switch (field)
-        {
-        case 1:
-            sscanf(token, "%2d%2d%2d", &hh, &mm, &ss);
-            break;
-        case 2:
-            status = token[0];
-            break;
-        case 9:
-            sscanf(token, "%2d%2d%2d", &day, &mon, &year);
-            break;
-        }
-        token = strtok_r(NULL, ",", &saveptr);
-        field++;
-    }
+    /* Positional split that PRESERVES empty fields (see nmea_split). RMC:
+     *   0=$xxRMC 1=time 2=status 3=lat 4=N/S 5=lon 6=E/W 7=speed 8=course
+     *   9=date 10=magvar 11=magvar-E/W 12=mode
+     * course (8) and magvar (10/11) are routinely empty on a stationary
+     * timing receiver; the old strtok_r walk shifted the date into the
+     * wrong slot whenever any earlier field was empty. */
+    char *f[16];
+    int nf = nmea_split(buf, f, 16);
 
-    if (status != 'A')
+    if (nf < 3)
+        return false;
+
+    if (f[2][0] != 'A')
     {
         /* Fix lost — clear validity flag */
-        taskENTER_CRITICAL(&g_gps_spinlock);
-        g_gps_valid = false;
-        taskEXIT_CRITICAL(&g_gps_spinlock);
+        taskENTER_CRITICAL(&g_gnss_spinlock);
+        g_gnss_valid = false;
+        taskEXIT_CRITICAL(&g_gnss_spinlock);
+        return false;
+    }
+
+    if (nf < 10)
+        return false;
+
+    int hh = 0, mm = 0, ss = 0;
+    int day = 0, mon = 0, year = 0;
+    if (sscanf(f[1], "%2d%2d%2d", &hh, &mm, &ss) != 3 ||
+        sscanf(f[9], "%2d%2d%2d", &day, &mon, &year) != 3)
+    {
+        /* Malformed time/date on a sentence claiming a valid fix: keep the
+         * previous valid time rather than poisoning g_gnss_seconds. */
         return false;
     }
 
     if (year < 80)
         year += 100;
 
-    /* Reject malformed RMC: the two sscanf() calls above do not report
-     * failure, and a truncated/noisy sentence can leave these fields at 0 or
-     * out of range. Feeding mon=0 (-> tm_mon=-1) to my_timegm would index
-     * days_in_month[-1]. On a parse failure, keep the previous valid time
-     * rather than poisoning g_gps_seconds. (ss==60 permitted for leap second.) */
+    /* Range-check before building tm. Feeding mon=0 (-> tm_mon=-1) to
+     * my_timegm would index days_in_month[-1]. On a range failure, keep the
+     * previous valid time rather than poisoning g_gnss_seconds.
+     * (ss==60 permitted for leap second.) */
     if (mon < 1 || mon > 12 || day < 1 || day > 31 ||
         hh > 23 || mm > 59 || ss > 60 || year < 80 || year > 200)
     {
@@ -1548,12 +1748,12 @@ static bool parse_rmc(const char *line)
 
     time_t utc = my_timegm(&t);
 
-    taskENTER_CRITICAL(&g_gps_spinlock);
-    g_gps_seconds = utc;
-    g_gps_valid = true;
-    taskEXIT_CRITICAL(&g_gps_spinlock);
+    taskENTER_CRITICAL(&g_gnss_spinlock);
+    g_gnss_seconds = utc;
+    g_gnss_valid = true;
+    taskEXIT_CRITICAL(&g_gnss_spinlock);
 
-    g_last_gps_update = time(NULL);
+    g_last_gnss_update = time(NULL);
     return true;
 }
 
@@ -1611,13 +1811,13 @@ static void gsv_publish_snapshot(void)
         mx = 0;
     }
 
-    portENTER_CRITICAL(&g_gps_sig_lock);
-    g_gps_snr_avg = avg;
-    g_gps_snr_min = mn;
-    g_gps_snr_max = mx;
-    g_gps_sv_in_view = cnt;
-    g_gps_sig_last_update_ms = esp_timer_get_time() / 1000;
-    portEXIT_CRITICAL(&g_gps_sig_lock);
+    portENTER_CRITICAL(&g_gnss_sig_lock);
+    g_gnss_snr_avg = avg;
+    g_gnss_snr_min = mn;
+    g_gnss_snr_max = mx;
+    g_gnss_sv_in_view = cnt;
+    g_gnss_sig_last_update_ms = esp_timer_get_time() / 1000;
+    portEXIT_CRITICAL(&g_gnss_sig_lock);
 }
 
 static bool parse_gsv(const char *line)
@@ -1626,10 +1826,10 @@ static bool parse_gsv(const char *line)
      *         field 0     1     2          3   4    5    6   7   then 4-per-SV
      *
      * We don't care about elev/azim. We harvest snr for each reported SV.
-     *
-     * Algorithm: parse total/sentence/sv_in_view first (a pre-scan), clear
-     * the accumulator on sentence==1, then a second pass stores per-SV
-     * SNRs. Two passes are simpler and cheaper than buffering. */
+     * Fields are extracted positionally (nmea_split) so an empty SNR — "in
+     * view but not tracked", extremely common — stays in its own slot
+     * instead of shifting every later SV's fields left, which is what the
+     * old strtok_r walk did. */
     if (line[0] != '$' || strlen(line) < 8)
         return false;
 
@@ -1645,26 +1845,16 @@ static bool parse_gsv(const char *line)
     if (star)
         *star = 0;
 
-    /* ── Pass 1: read total, sentence, sv_in_view to decide on accumulator reset ── */
-    int total = 0, sentence = 0, sv_in_view = 0;
-    {
-        char pass1[128];
-        memcpy(pass1, buf, sizeof(pass1));
-        char *tok, *save;
-        int field = 0;
-        tok = strtok_r(pass1, ",", &save);
-        while (tok && field <= 3)
-        {
-            if (field == 1)
-                total = atoi(tok);
-            else if (field == 2)
-                sentence = atoi(tok);
-            else if (field == 3)
-                sv_in_view = atoi(tok);
-            tok = strtok_r(NULL, ",", &save);
-            field++;
-        }
-    }
+    /* Header (4 fields) + up to 4 SVs × 4 fields = 20; NMEA 4.10 receivers
+     * append a signal-ID field — 24 gives headroom. */
+    char *f[24];
+    int nf = nmea_split(buf, f, 24);
+    if (nf < 4)
+        return false;
+
+    int total = atoi(f[1]);
+    int sentence = atoi(f[2]);
+    int sv_in_view = atoi(f[3]);
 
     if (sentence == 1)
     {
@@ -1673,44 +1863,36 @@ static bool parse_gsv(const char *line)
     g_gsv_acc[t].total_expected = total;
     g_gsv_acc[t].count = sv_in_view;
 
-    /* ── Pass 2: store SNRs ── */
+    /* Per-SV groups: prn=f[4+4k], elev, azim, snr=f[7+4k]. */
+    for (int k = 0; 7 + 4 * k < nf; k++)
     {
-        char *tok, *save;
-        int field = 0;
-        int sv_in_sentence = 0;
+        const char *tok = f[7 + 4 * k]; /* SNR slot of the k-th SV group */
 
-        tok = strtok_r(buf, ",", &save);
-        while (tok)
+        /* SNR field semantics vary by receiver:
+         *   - Empty field: SV is in view but not currently tracked
+         *   - Real signal: typically 20-50 dB-Hz, max ~55 at zenith
+         *   - Some receivers report noise floor (5-15) for untracked
+         *     SVs instead of leaving the field empty
+         *   - Bogus values (60+, 100+) occur with non-standard
+         *     extensions, partial parses, or buggy NMEA emitters
+         *
+         * Accept only physically plausible values. Cutoff at 10 is a
+         * pragmatic compromise: it filters clearly-untracked (<10)
+         * and clearly-bogus (>55) readings, but does NOT distinguish
+         * a genuinely weak track at ~10-15 dB-Hz from a receiver's
+         * noise-floor stand-in for "not tracked" at the same value.
+         * Values in that overlap band get counted as real tracking;
+         * this inflates the "in view" count slightly under weak
+         * signal but does not affect the servo (which runs off PPS,
+         * not SNR). Outside this range, treat as "not tracked" (SNR=0). */
+        int snr_int = (tok[0] == 0) ? 0 : atoi(tok);
+        uint8_t snr = (snr_int >= 10 && snr_int <= 55)
+                          ? (uint8_t)snr_int
+                          : 0;
+        int sv_global = (sentence - 1) * 4 + k;
+        if (sv_global >= 0 && sv_global < GSV_MAX_SVS_PER_TALKER)
         {
-            if (field >= 4)
-            {
-                int rel = (field - 4) % 4;
-                sv_in_sentence = (field - 4) / 4;
-                if (rel == 3) /* SNR token */
-                {
-                    /* SNR field semantics vary by receiver:
-                     *   - Empty field: SV is in view but not currently tracked
-                     *   - Real signal: typically 20-50 dB-Hz, max ~55 at zenith
-                     *   - Some receivers report noise floor (5-15) for untracked
-                     *     SVs instead of leaving the field empty
-                     *   - Bogus values (60+, 100+) occur with non-standard
-                     *     extensions, partial parses, or buggy NMEA emitters
-                     *
-                     * Accept only physically plausible values. Outside this
-                     * range, treat as "not tracked" (SNR=0). */
-                    int snr_int = (tok[0] == 0) ? 0 : atoi(tok);
-                    uint8_t snr = (snr_int >= 10 && snr_int <= 55)
-                                      ? (uint8_t)snr_int
-                                      : 0;
-                    int sv_global = (sentence - 1) * 4 + sv_in_sentence;
-                    if (sv_global >= 0 && sv_global < GSV_MAX_SVS_PER_TALKER)
-                    {
-                        g_gsv_acc[t].snr[sv_global] = snr;
-                    }
-                }
-            }
-            tok = strtok_r(NULL, ",", &save);
-            field++;
+            g_gsv_acc[t].snr[sv_global] = snr;
         }
     }
 
@@ -1756,34 +1938,31 @@ static bool parse_gsa(const char *line)
     if (star)
         *star = 0;
 
-    /* Build the new active-set for this talker as we walk fields 3..14. */
+    /* Build the new active-set for this talker from fields 3..14. Positional
+     * split (nmea_split): unused PRN slots are EMPTY fields, and the old
+     * strtok_r walk collapsed them — sliding PDOP/HDOP/VDOP left into the
+     * PRN window, where atoi("2.5") == 2 minted phantom SVs and corrupted
+     * the churn statistics and the sv_used count. */
     uint8_t new_set[SV_CHURN_PRN_MAX / 8] = {0};
     int used = 0;
 
-    char *tok, *save;
-    int field = 0;
-    tok = strtok_r(buf, ",", &save);
-    while (tok)
+    char *f[20]; /* $xxGSA has 18 fields; NMEA 4.10 appends a system ID */
+    int nf = nmea_split(buf, f, 20);
+    for (int i = 3; i <= 14 && i < nf; i++)
     {
-        if (field >= 3 && field <= 14)
+        if (f[i][0] == 0)
+            continue;
+        int prn = atoi(f[i]);
+        if (prn > 0 && prn < SV_CHURN_PRN_MAX)
         {
-            if (tok[0] != 0)
-            {
-                int prn = atoi(tok);
-                if (prn > 0 && prn < SV_CHURN_PRN_MAX)
-                {
-                    prn_set(new_set, prn);
-                    used++;
-                }
-            }
+            prn_set(new_set, prn);
+            used++;
         }
-        tok = strtok_r(NULL, ",", &save);
-        field++;
     }
 
     /* Diff new_set against this talker's previous set; tally entries/exits.
      *
-     * IMPORTANT: multi-GNSS receivers can emit GSA in two patterns:
+     * IMPORTANT: GNSS receivers can emit GSA in two patterns:
      *
      *   Pattern A: one $GPGSA + one $GLGSA + ... per cycle, each containing
      *              only that constellation's PRNs. $GNGSA (if emitted)
@@ -1794,10 +1973,9 @@ static bool parse_gsa(const char *line)
      *
      * In pattern B, treating each $GNGSA arrival as one "set update" of
      * the GN slot makes successive $GNGSA emissions look like enormous
-     * churn (the GPS set "replaces" the GLONASS set in the same slot).
-     * The fix: when we detect pattern B (multiple GN sentences arriving
-     * close together with disjoint PRN sets), we *union* them into the
-     * single GN slot over a 1.2 s coalescing window. */
+     * churn — each constellation's PRN set appears to "replace" the
+     * previous one, so a steady 4-constellation receiver would report
+     * ~4× |SVs| entries and exits per second. */
     uint32_t entries = 0, exits = 0;
 
     if (t == 4) /* GN: special handling — coalesce within a cycle */
@@ -1847,12 +2025,12 @@ static bool parse_gsa(const char *line)
     g_sv_gsa_seen++;
     portEXIT_CRITICAL(&g_sv_churn_lock);
 
-    portENTER_CRITICAL(&g_gps_sig_lock);
+    portENTER_CRITICAL(&g_gnss_sig_lock);
     /* Multiple GSA sentences arrive in a multi-GNSS receiver — one per
      * constellation. Keep "last-seen" as the figure to display so the
      * OLED matches what GNSS_SIG prints. */
-    g_gps_sv_used = used;
-    portEXIT_CRITICAL(&g_gps_sig_lock);
+    g_gnss_sv_used = used;
+    portEXIT_CRITICAL(&g_gnss_sig_lock);
 
     return true;
 }
@@ -1862,10 +2040,10 @@ static bool parse_gsa(const char *line)
  *
  * pps_isr_handler captures the PHC timestamp inside the GPIO ISR — as close
  * to the PPS edge as possible — to eliminate scheduling jitter from the
- * servo offset measurement. pps_task turns each captured edge into a GPS
+ * servo offset measurement. pps_task turns each captured edge into a GNSS
  * time target (handling sentence_offset bootstrapping, holdover coasting,
  * and PPS edge-to-edge jitter accounting). servo_task is the PI(D) control
- * loop that disciplines the PHC frequency to GPS, including lock acquisition,
+ * loop that disciplines the PHC frequency to GNSS, including lock acquisition,
  * holdover, and the self-healing reject-wedge watchdog.
  * ═════════════════════════════════════════════════════════════════════════ */
 
@@ -1877,6 +2055,18 @@ static void IRAM_ATTR pps_isr_handler(void *arg)
      * scheduling jitter (~10–50 µs) that would otherwise be injected
      * directly into the servo offset measurement.
      */
+
+    /* Drop edges while emac_restart_preserve_phc() is rebuilding the MAC:
+     * esp_eth_stop/start re-initializes the PHC, so a capture landing in
+     * the ~220 ms dead window reads a just-reset counter (~0). Publishing
+     * that would hand pps_task a garbage offset sample (LOCKED absorbs it
+     * via the reject gate, but ACQUIRING would burn a sanity-rail strike
+     * on it). Losing the edge entirely is the clean outcome: pps_task sees
+     * no new capture and the servo simply skips that second. atomic_load
+     * on RV32 is a plain inlined load — ISR/IRAM-safe. */
+    if (atomic_load(&g_emac_restarting))
+        return;
+
     struct timespec ts;
     emac_get_time(&ts);
 
@@ -1897,12 +2087,13 @@ static void IRAM_ATTR pps_isr_handler(void *arg)
 }
 
 /* ─────────────────────────────────────────────────────────────────────────
- * pps_task  — removed the erroneous +1 on gps_sec
+ * pps_task — waits on the PPS ISR, updates jitter tracking, computes the
+ * GNSS-time target for the servo, and notifies servo_task.
  * ───────────────────────────────────────────────────────────────────────── */
 static void pps_task(void *arg)
 {
     /* Gate on timing-core readiness (PHC started + L2TAP bound), NOT on link.
-     * GPS disciplining must begin at power-on even with no peer connected. */
+     * GNSS disciplining must begin at power-on even with no peer connected. */
     while (!atomic_load(&g_phc_ready))
     {
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -1913,7 +2104,6 @@ static void pps_task(void *arg)
     { /* discard */
     }
 
-    static int sentence_offset = -1;
     static uint32_t last_capture_seq = 0;
 
     while (1)
@@ -1971,16 +2161,16 @@ static void pps_task(void *arg)
             prev_phc_ns_for_jitter = phc_ns;
             /* ── end jitter accumulation ── */
 
-            taskENTER_CRITICAL(&g_gps_spinlock);
-            time_t gps_sec = g_gps_seconds;
-            bool gps_valid = g_gps_valid;
-            taskEXIT_CRITICAL(&g_gps_spinlock);
+            taskENTER_CRITICAL(&g_gnss_spinlock);
+            time_t gnss_sec = g_gnss_seconds;
+            bool gnss_valid = g_gnss_valid;
+            taskEXIT_CRITICAL(&g_gnss_spinlock);
 
             ESP_LOGD("PPS_DIAG",
-                     "phc_s=%llu gps_sec=%lld so=%d",
+                     "phc_s=%llu gnss_sec=%lld so=%d",
                      (unsigned long long)phc_s,
-                     (long long)gps_sec,
-                     sentence_offset);
+                     (long long)gnss_sec,
+                     g_sentence_offset);
 
             bool log_bootstrap = false;
             bool log_so_determined = false;
@@ -1992,63 +2182,62 @@ static void pps_task(void *arg)
             taskENTER_CRITICAL(&g_servo_spinlock);
 
             g_last_pps_phc_ns = phc_ns;
-            g_pps_seen = true;
             g_pps_edge_count++;
 
-            if (gps_valid)
+            if (gnss_valid)
             {
-                if (sentence_offset < 0 && g_phc_stepped)
+                if (g_sentence_offset < 0 && g_phc_stepped)
                 {
-                    int64_t delta = (int64_t)phc_s - ((int64_t)gps_sec + (int64_t)g_utc_offset);
+                    int64_t delta = (int64_t)phc_s - ((int64_t)gnss_sec + (int64_t)g_utc_offset);
                     if (delta < 0 || delta > 2)
                         delta = 1;
-                    sentence_offset = (int)delta;
+                    g_sentence_offset = (int)delta;
                     log_so_determined = true;
                     log_so_val = delta;
                 }
 
-                if (sentence_offset < 0)
+                if (g_sentence_offset < 0)
                 {
                     taskEXIT_CRITICAL(&g_servo_spinlock);
                     goto do_logging;
                 }
 
-                uint64_t gps_target =
-                    ((uint64_t)gps_sec + (uint64_t)g_utc_offset + (uint64_t)sentence_offset) * 1000000000ULL;
+                uint64_t gnss_target =
+                    ((uint64_t)gnss_sec + (uint64_t)g_utc_offset + (uint64_t)g_sentence_offset) * 1000000000ULL;
 
-                if (!g_gps_pps_valid)
+                if (!g_gnss_pps_valid)
                 {
-                    g_gps_pps_ns = gps_target;
-                    g_gps_pps_valid = true;
+                    g_gnss_pps_ns = gnss_target;
+                    g_gnss_pps_valid = true;
                     log_bootstrap = true;
-                    log_target = gps_target;
+                    log_target = gnss_target;
                 }
                 else
                 {
-                    uint64_t expected = g_gps_pps_ns + 1000000000ULL;
-                    int64_t err = (int64_t)gps_target - (int64_t)expected;
+                    uint64_t expected = g_gnss_pps_ns + 1000000000ULL;
+                    int64_t err = (int64_t)gnss_target - (int64_t)expected;
 
                     if (llabs(err) > 5000000000LL)
                     {
-                        g_gps_pps_ns += 1000000000ULL;
+                        g_gnss_pps_ns += 1000000000ULL;
                     }
                     else
                     {
-                        g_gps_pps_ns = gps_target;
-                        log_target = gps_target;
+                        g_gnss_pps_ns = gnss_target;
+                        log_target = gnss_target;
                         log_err = err;
                         if (llabs(err) > 10000000LL)
                             log_correction = true;
                     }
                 }
 
-                if (g_gps_pps_valid)
-                    g_phc_offset_ns = (int64_t)phc_ns - (int64_t)g_gps_pps_ns;
+                if (g_gnss_pps_valid)
+                    g_phc_offset_ns = (int64_t)phc_ns - (int64_t)g_gnss_pps_ns;
             }
             else
             {
-                if (g_gps_pps_valid)
-                    g_gps_pps_ns += 1000000000ULL;
+                if (g_gnss_pps_valid)
+                    g_gnss_pps_ns += 1000000000ULL;
             }
 
             taskEXIT_CRITICAL(&g_servo_spinlock);
@@ -2090,7 +2279,7 @@ static void servo_task(void *arg)
 {
     /* Wait for the timing core to be ready: EMAC driver started, PHC running,
      * L2TAP bound. This is set at init right after esp_eth_start — it does NOT
-     * wait for a peer/link. The servo therefore acquires GPS lock at power-on
+     * wait for a peer/link. The servo therefore acquires GNSS lock at power-on
      * whether or not a slave is connected. (Previously this gated on
      * g_l2tap_ready set inside on_link_up, which stalled the entire timing core
      * until a link appeared — the root cause of the "master before slave"
@@ -2108,38 +2297,40 @@ static void servo_task(void *arg)
     static int measure_count = 0;
     static int64_t offset_acc = 0;
     static int64_t prev_acq_offset = INT64_MIN;
+    static int acq_rail_streak = 0;  /* consecutive ACQUIRING samples beyond MAX_STEP_NS */
+    static int acq_sample_count = 0; /* accepted ACQUIRING samples since last transition */
     uint32_t pps_edges_at_holdover_entry = 0;
     int64_t lock_start_at_holdover_entry = 0; /* preserve lock duration across sentence-only outages */
 
 #define MEASURE_TICKS 5
 #define SERVO_INTEGRAL_LIMIT 2000000000.0
-#define HOLDOVER_RESUME_THRESHOLD_NS 500000LL
 
     while (1)
     {
         ulTaskNotifyTake(pdTRUE, pdMS_TO_TICKS(1000));
 
-        taskENTER_CRITICAL(&g_gps_spinlock);
-        time_t cur_gps_sec = g_gps_seconds;
-        bool cur_gps_valid = g_gps_valid;
-        taskEXIT_CRITICAL(&g_gps_spinlock);
+        taskENTER_CRITICAL(&g_gnss_spinlock);
+        time_t cur_gnss_sec = g_gnss_seconds;
+        bool cur_gnss_valid = g_gnss_valid;
+        taskEXIT_CRITICAL(&g_gnss_spinlock);
 
         taskENTER_CRITICAL(&g_servo_spinlock);
         uint64_t pps = g_last_pps_phc_ns;
-        uint64_t gps_pps_snap = g_gps_pps_ns;
+        uint64_t gnss_pps_snap = g_gnss_pps_ns;
+        bool gnss_pps_valid_snap = g_gnss_pps_valid;
         taskEXIT_CRITICAL(&g_servo_spinlock);
 
         bool new_pps = (pps != last_pps);
         if (new_pps)
             last_pps = pps;
 
-        g_holdover = (time(NULL) - g_last_gps_update > HOLDOVER_TIMEOUT_SEC) || !cur_gps_valid;
+        g_holdover = (time(NULL) - g_last_gnss_update > HOLDOVER_TIMEOUT_SEC) || !cur_gnss_valid;
 
         if (g_holdover && !prev_holdover)
         {
-            /* Before the first GPS lock there is nothing to hold over — the PHC
+            /* Before the first GNSS lock there is nothing to hold over — the PHC
              * has never held real time. Show ACQUIRING (link up, waiting for
-             * GPS), not HOLDOVER, so the LED's "degrading" heartbeat doesn't
+             * GNSS), not HOLDOVER, so the LED's "degrading" heartbeat doesn't
              * imply a once-good clock is decaying. Only a clock that has locked
              * at least once (g_ever_locked) can legitimately be in holdover. */
             if (g_ever_locked)
@@ -2149,7 +2340,7 @@ static void servo_task(void *arg)
             }
             else
             {
-                ESP_LOGW("SERVO", "GPS not yet acquired — ACQUIRING (no holdover before first fix)");
+                ESP_LOGW("SERVO", "GNSS not yet acquired — ACQUIRING (no holdover before first fix)");
                 led_set_state(LED_STATE_ACQUIRING);
             }
             lock_start_at_holdover_entry = g_lock_start_ms; /* stash for possible restore */
@@ -2173,12 +2364,12 @@ static void servo_task(void *arg)
                  * missing, only the sentence stream paused.
                  *
                  * BUT the phase baseline is now stale. During holdover,
-                 * pps_task advanced g_gps_pps_ns by a blind +1e9 per PPS edge
+                 * pps_task advanced g_gnss_pps_ns by a blind +1e9 per PPS edge
                  * while the PHC free-ran (frozen integrator, no correction
                  * applied). Over a multi-minute / multi-hour outage these
-                 * diverge by tens of ms. On the first GPS sentence after
-                 * recovery, pps_task re-snaps g_gps_pps_ns to true GPS time
-                 * (g_gps_pps_ns = gps_target), stepping the reference by that
+                 * diverge by tens of ms. On the first GNSS sentence after
+                 * recovery, pps_task re-snaps g_gnss_pps_ns to true GNSS time
+                 * (g_gnss_pps_ns = gnss_target), stepping the reference by that
                  * accumulated divergence in a single tick. The 32-sample
                  * averager, however, still holds the PRE-holdover baseline, so
                  * every post-resume raw_offset lands far from the running mean
@@ -2214,39 +2405,67 @@ static void servo_task(void *arg)
                 g_qual_raw_samples = 0;
 
                 /* PRESERVED (deliberately untouched): state, g_phc_stepped,
-                 * g_phc_residual_measured, g_gps_pps_valid, g_integral,
+                 * g_phc_residual_measured, g_gnss_pps_valid, g_integral,
                  * g_freq_ppb. */
 
-                /* LED was set to HOLDOVER on entry; restore it now. */
-                led_set_state(LED_STATE_LOCKED);
+                if (state == SERVO_LOCKED)
+                {
+                    /* LED was set to HOLDOVER on entry; restore it now. */
+                    led_set_state(LED_STATE_LOCKED);
 
-                /* PPS was continuous through the outage, so lock was never
-                 * truly lost — restore the original lock-start timestamp so the
-                 * displayed lock duration counts through the blip rather than
-                 * resetting. This also un-sticks screen 2's lock-duration line
-                 * (the > 0 gate) so it stops showing "(not locked)" while
-                 * screen 1 shows LOCKED.
-                 *
-                 * g_lock_acquired_ms, by contrast, is restamped to NOW (not
-                 * restored): we just re-seated the phase averager, so the
-                 * POST_HOLDOVER_SETTLE_MS window for advertise_as_holdover()
-                 * should re-arm from this moment, not from the original lock. */
-                g_lock_start_ms = (lock_start_at_holdover_entry > 0)
-                                      ? lock_start_at_holdover_entry
-                                      : esp_timer_get_time() / 1000;
-                g_lock_acquired_ms = esp_timer_get_time() / 1000;
+                    /* PPS was continuous through the outage, so lock was never
+                     * truly lost — restore the original lock-start timestamp so the
+                     * displayed lock duration counts through the blip rather than
+                     * resetting. This also un-sticks screen 2's lock-duration line
+                     * (the > 0 gate) so it stops showing "(not locked)" while
+                     * screen 1 shows LOCKED.
+                     *
+                     * g_lock_acquired_ms, by contrast, is restamped to NOW (not
+                     * restored): we just re-seated the phase averager, so the
+                     * POST_HOLDOVER_SETTLE_MS window for advertise_as_holdover()
+                     * should re-arm from this moment, not from the original lock. */
+                    g_lock_start_ms = (lock_start_at_holdover_entry > 0)
+                                          ? lock_start_at_holdover_entry
+                                          : esp_timer_get_time() / 1000;
+                    g_lock_acquired_ms = esp_timer_get_time() / 1000;
+                }
+                else
+                {
+                    /* Holdover began before this cycle ever reached LOCKED —
+                     * e.g. the fix flapped right after the COARSE STEP (an
+                     * invalid fix flags holdover immediately). There is no
+                     * lock to restore, and claiming LOCKED here made the LED
+                     * lie for the remainder of the acquisition. */
+                    led_set_state(LED_STATE_ACQUIRING);
+                }
             }
             else
             {
                 /* True PPS outage (USB power cycle, PPS wire break, receiver
-                 * power loss). g_gps_pps_ns and PHC are no longer related to
-                 * GPS time — full re-acquire from scratch. */
+                 * power loss). g_gnss_pps_ns and PHC are no longer related to
+                 * GNSS time — full re-acquire from scratch. */
                 ESP_LOGW("SERVO",
                          "GNSS lock restored (PPS was lost) — re-acquiring from scratch");
                 state = SERVO_UNLOCKED;
+                /* g_phc_stepped, g_gnss_pps_valid and g_sentence_offset are
+                 * read (and written) by pps_task inside g_servo_spinlock
+                 * sections on the other core. Reset them under the same lock
+                 * so pps_task can never observe a half-applied reset — e.g.
+                 * re-bootstrapping the reference between the stores.
+                 *
+                 * g_sentence_offset is reset because the receiver was power-
+                 * cycled (that's what a true PPS outage means): its sentence
+                 * timing relative to the PPS edge may have changed, and a
+                 * stale offset would make the fresh acquisition converge a
+                 * full second off TAI. With g_phc_stepped false, pps_task
+                 * re-derives it on the first edge after the next COARSE
+                 * STEP — the same sequencing as first boot, at zero cost. */
+                taskENTER_CRITICAL(&g_servo_spinlock);
                 g_phc_stepped = false;
+                g_gnss_pps_valid = false;
+                g_sentence_offset = -1;
+                taskEXIT_CRITICAL(&g_servo_spinlock);
                 g_phc_residual_measured = false;
-                g_gps_pps_valid = false;
                 g_integral = 0;
                 g_freq_ppb = 0;
                 stable_count = 0;
@@ -2277,10 +2496,10 @@ static void servo_task(void *arg)
         {
         case SERVO_UNLOCKED:
         {
-            if (!cur_gps_valid || cur_gps_sec < 1577836800LL)
+            if (!cur_gnss_valid || cur_gnss_sec < 1577836800LL)
             {
-                ESP_LOGW("SERVO", "Waiting for valid GPS time (gps_sec=%lld)",
-                         (long long)cur_gps_sec);
+                ESP_LOGW("SERVO", "Waiting for valid GNSS time (gnss_sec=%lld)",
+                         (long long)cur_gnss_sec);
                 continue;
             }
 
@@ -2292,13 +2511,15 @@ static void servo_task(void *arg)
             measure_count = 0;
             offset_acc = 0;
             prev_acq_offset = INT64_MIN;
+            acq_rail_streak = 0;
+            acq_sample_count = 0;
             g_integral = 0;
 
             g_lock_acquired_ms = 0;
             g_settled_after_holdover = false;
 
             uint32_t tai_sec =
-                (uint32_t)((uint64_t)cur_gps_sec + (uint64_t)g_utc_offset + 1ULL);
+                (uint32_t)((uint64_t)cur_gnss_sec + (uint64_t)g_utc_offset + 1ULL);
 
             ESP_LOGW("SERVO", "COARSE STEP → TAI=%" PRIu32 " s", tai_sec);
 
@@ -2309,14 +2530,88 @@ static void servo_task(void *arg)
 
             servo_phc_ioctl(ETH_MAC_ESP_CMD_S_PTP_TIME, &t);
 
+            /* Published under the spinlock: pps_task reads g_phc_stepped
+             * inside its own g_servo_spinlock section (on the other core)
+             * to decide when to determine sentence_offset. */
+            taskENTER_CRITICAL(&g_servo_spinlock);
             g_phc_stepped = true;
+            taskEXIT_CRITICAL(&g_servo_spinlock);
 
             continue;
         }
 
         case SERVO_ACQUIRING:
         {
-            int64_t offset = (int64_t)pps - (int64_t)gps_pps_snap;
+            /* Reference-valid gate. pps_task only bootstraps g_gnss_pps_ns
+             * while the GNSS fix is valid, but it notifies this task on
+             * every edge regardless. If the fix flapped invalid between the
+             * COARSE STEP and this tick, the reference is still 0: an offset
+             * computed against it (~1.7e18 ns) would feed ACQUIRE-A a
+             * garbage average and step the PHC to the 1970 epoch — with no
+             * exit from ACQUIRING to ever recover. Skip edges until the
+             * reference exists. */
+            if (!gnss_pps_valid_snap)
+            {
+                static uint32_t ref_skip_count = 0;
+                if ((ref_skip_count++ & 0x1F) == 0) /* ~1 line per 32 s of flap */
+                    ESP_LOGW("SERVO",
+                             "ACQUIRING: GNSS PPS reference not bootstrapped "
+                             "(fix not valid) — skipping edge");
+                continue;
+            }
+
+            int64_t offset = (int64_t)pps - (int64_t)gnss_pps_snap;
+
+            /* Sanity rail (MAX_STEP_NS). Never feed a beyond-rail sample to
+             * ACQUIRE-A/B: a lone outlier (e.g. a PPS edge captured during
+             * an EMAC restart window reads the PHC as ~0) is skipped, and a
+             * persistent divergence — which the slew-limited servo could
+             * never walk out and ACQUIRE-A would "fix" by stepping the PHC
+             * to garbage — forces a clean restart of the acquisition. */
+            if (llabs(offset) > MAX_STEP_NS)
+            {
+                acq_rail_streak++;
+                ESP_LOGE("SERVO",
+                         "ACQUIRING: offset %lld ns beyond sanity rail (strike %d/%d)",
+                         (long long)offset, acq_rail_streak, ACQ_RAIL_STRIKES);
+                if (acq_rail_streak >= ACQ_RAIL_STRIKES)
+                {
+                    ESP_LOGE("SERVO",
+                             "ACQUIRING: PHC/reference divergence is persistent "
+                             "— restarting acquisition from UNLOCKED");
+                    acq_rail_streak = 0;
+                    state = SERVO_UNLOCKED;
+                    g_phc_residual_measured = false;
+                    g_integral = 0;
+                    g_freq_ppb = 0;
+                    stable_count = 0;
+                    prev_acq_offset = INT64_MIN;
+                    measure_count = 0;
+                    offset_acc = 0;
+                    median_filter_reset();
+                    avg_reset();
+                    g_last_offset = 0;
+                }
+                continue;
+            }
+            acq_rail_streak = 0;
+
+            /* ACQUIRING deliberately has NO convergence timeout. On noisy
+             * PPS the lock gates (5 µs phase / 2 µs freq delta, 9
+             * consecutive samples) can legitimately take many minutes, and
+             * during all of it the fast-gain servo is actively disciplining
+             * — a forced re-step would only throw that progress away and
+             * step the PHC under any slave already following. The inputs
+             * that used to wedge this state are all gated upstream now
+             * (reference-valid gate + sanity rail above, NMEA checksum,
+             * ISR restart gate), so a long acquisition means signal
+             * quality is the limit. Surface that instead of "fixing" it:
+             * warn every ~5 minutes of continuous acquisition. */
+            if (++acq_sample_count % 300 == 0)
+                ESP_LOGW("SERVO",
+                         "ACQUIRING for ~%d min without lock — PPS jitter or "
+                         "antenna/sky-view quality is the likely limit",
+                         acq_sample_count / 60);
 
             if (!g_phc_residual_measured)
             {
@@ -2448,7 +2743,8 @@ static void servo_task(void *arg)
             g_freq_ppb = freq_sat;
 
             int32_t adj_acq_ppb = (int32_t)g_freq_ppb;
-            servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_acq_ppb);
+            if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_acq_ppb))
+                atomic_store(&g_freq_ppb_hw, adj_acq_ppb);
 
             bool phase_ok = (llabs(offset) < LOCK_OFFSET_NS);
             bool freq_ok = (prev_acq_offset == INT64_MIN) ||
@@ -2463,6 +2759,7 @@ static void servo_task(void *arg)
                              "LOCKED (offset=%lld ns, phase+freq converged %d samples, adj=%ld ppb)",
                              (long long)offset, stable_count, (long)adj_acq_ppb);
                     state = SERVO_LOCKED;
+                    acq_sample_count = 0;
 
                     g_integral = -(double)g_freq_ppb / SERVO_KI_SLOW;
                     if (g_integral > SERVO_INTEGRAL_LIMIT)
@@ -2487,7 +2784,7 @@ static void servo_task(void *arg)
                     g_settled_after_holdover = false;
 
                     /* The COARSE STEP (SERVO_UNLOCKED) already set the PHC to
-                     * GPS-derived TAI before we could reach this state, so the
+                     * GNSS-derived TAI before we could reach this state, so the
                      * PHC genuinely holds real time now. Latch it: from here on
                      * holdover (clockClass 7) is a legitimate claim. */
                     g_ever_locked = true;
@@ -2513,13 +2810,20 @@ static void servo_task(void *arg)
 
         case SERVO_LOCKED:
         {
-            int64_t raw_offset = (int64_t)pps - (int64_t)gps_pps_snap;
+            int64_t raw_offset = (int64_t)pps - (int64_t)gnss_pps_snap;
 
 #define HARD_REJECT_NS 100000LL /* 100 µs */
             int64_t reference = (g_avg_count > 0)
                                     ? g_avg_sum / (int64_t)g_avg_count
                                     : raw_offset;
 
+            /* Only apply the reject gate once the averager has enough samples
+             * for a stable reference. 8 is roughly a quarter of AVG_WINDOW (32);
+             * below that the running mean is dominated by whichever handful of
+             * early samples we happen to have, and rejecting against it would
+             * throw away good samples during warm-up. Once we cross 8, the
+             * reference is statistically representative enough to distinguish
+             * a real 100 µs outlier from ordinary PPS noise. */
             if (g_avg_count >= 8 && llabs(raw_offset - reference) > HARD_REJECT_NS)
             {
                 g_total_rejects++;
@@ -2630,7 +2934,8 @@ static void servo_task(void *arg)
                 g_freq_ppb = -SERVO_FREQ_LIMIT_PPB;
 
             int32_t adj_ppb = (int32_t)g_freq_ppb;
-            servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_ppb);
+            if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_ppb))
+                atomic_store(&g_freq_ppb_hw, adj_ppb);
 
             g_last_offset = offset;
 
@@ -2718,9 +3023,9 @@ static void servo_task(void *arg)
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION: Background tasks
  *
- * gps_task           — reads the GPS UART, feeds the TAU1201 configurator
+ * gnss_task           — reads the GNSS UART, feeds the TAU1201 configurator
  *                      while it runs, and dispatches NMEA lines to parsers.
- * gps_signal_task    — periodic (30 s) signal-quality / PPS-jitter / SV-churn
+ * gnss_signal_task    — periodic (30 s) signal-quality / PPS-jitter / SV-churn
  *                      diagnostics report.
  * ptp_rx_task        — L2TAP receive loop; dispatches Delay_Req and Announce,
  *                      and runs the BMCA announce-timeout reclaim.
@@ -2728,70 +3033,94 @@ static void servo_task(void *arg)
  *                      transmit loop while we are the active master.
  * ═════════════════════════════════════════════════════════════════════════ */
 
-static void gps_task(void *arg)
+static void gnss_task(void *arg)
 {
     static char line[128];
     int idx = 0;
 
-    uint8_t c;
+    /* Chunked UART reads: one driver call per up-to-64-byte burst instead
+     * of one per byte (~1-2k mutex/ringbuffer round-trips per second at
+     * full NMEA rate). The timeout is deliberately SHORT (1 tick = 10 ms):
+     * it only matters for the tail bytes of each 1 Hz burst, and it bounds
+     * the added parse latency of the burst's final sentence to one tick.
+     * That bound is load-bearing — the pps_task sentence_offset heuristic
+     * depends on time-bearing sentences landing consistently on the same
+     * side of the PPS edge, and a longer timeout (e.g. 100 ms) would eat
+     * visibly into that sentence-to-edge margin. Idle cost of the short
+     * timeout is ~100 empty wakeups/s at priority 5 — negligible. */
+    static uint8_t chunk[64];
 
     while (1)
     {
-        int len = uart_read_bytes(GPS_UART_NUM, &c, 1, pdMS_TO_TICKS(100));
+        int len = uart_read_bytes(GNSS_UART_NUM, chunk, sizeof(chunk),
+                                  pdMS_TO_TICKS(10));
 
         if (len <= 0)
             continue;
 
-        /* Fork RX byte into the TAU1201 timing-mode configurator while it's
-         * still running. Once the sequence has finished (success OR failure),
-         * skip the call entirely — it would just return immediately anyway,
-         * but a direct flag-check here avoids the per-byte function-call
-         * overhead across the translation-unit boundary. */
+        /* Fork the whole chunk into the TAU1201 timing-mode configurator
+         * while it's still running — this batch call is the interface
+         * feed_data was designed for. Once the sequence has finished
+         * (success OR failure), skip the call entirely; the direct
+         * flag-check avoids the function call across the translation-unit
+         * boundary. */
         if (!initialization_sequence_done)
         {
-            allystar_timing_feed_data(&c, 1);
+            allystar_timing_feed_data(chunk, (size_t)len);
         }
 
-        // NMEA line termination
-        if (c == '\n')
+        for (int ci = 0; ci < len; ci++)
         {
-            line[idx] = 0;
+            uint8_t c = chunk[ci];
 
-            if (strstr(line, "ZDA"))
+            // NMEA line termination
+            if (c == '\n')
             {
-                parse_zda(line);
-            }
-            else if (strstr(line, "RMC"))
-            {
-                parse_rmc(line);
-            }
-            else if (strstr(line, "GSV"))
-            {
-                parse_gsv(line);
-            }
-            else if (strstr(line, "GSA"))
-            {
-                parse_gsa(line);
-            }
+                line[idx] = 0;
 
-            idx = 0;
-        }
-        else if (c != '\r')
-        {
-            if (idx < sizeof(line) - 1)
-            {
-                line[idx++] = (char)c;
-            }
-            else
-            {
+                /* Checksum gate: only sentences whose "*XX" verifies get
+                 * parsed. Binary Allystar frames and boot-time partial
+                 * lines land here too and are dropped without logging
+                 * (see nmea_checksum_ok). */
+                if (nmea_checksum_ok(line))
+                {
+                    if (strstr(line, "ZDA"))
+                    {
+                        parse_zda(line);
+                    }
+                    else if (strstr(line, "RMC"))
+                    {
+                        parse_rmc(line);
+                    }
+                    else if (strstr(line, "GSV"))
+                    {
+                        parse_gsv(line);
+                    }
+                    else if (strstr(line, "GSA"))
+                    {
+                        parse_gsa(line);
+                    }
+                }
+
                 idx = 0;
+            }
+            else if (c != '\r')
+            {
+                if (idx < sizeof(line) - 1)
+                {
+                    line[idx++] = (char)c;
+                }
+                else
+                {
+                    idx = 0;
+                }
             }
         }
     }
 }
 
 /* Periodic signal-quality report — runs once every 30 seconds. */
-static void gps_signal_task(void *arg)
+static void gnss_signal_task(void *arg)
 {
     /* Let things stabilize before first report */
     vTaskDelay(pdMS_TO_TICKS(15000));
@@ -2801,14 +3130,14 @@ static void gps_signal_task(void *arg)
         uint8_t avg, mn, mx, sv_view, sv_used;
         int64_t last_ms;
 
-        portENTER_CRITICAL(&g_gps_sig_lock);
-        avg = g_gps_snr_avg;
-        mn = g_gps_snr_min;
-        mx = g_gps_snr_max;
-        sv_view = g_gps_sv_in_view;
-        sv_used = g_gps_sv_used;
-        last_ms = g_gps_sig_last_update_ms;
-        portEXIT_CRITICAL(&g_gps_sig_lock);
+        portENTER_CRITICAL(&g_gnss_sig_lock);
+        avg = g_gnss_snr_avg;
+        mn = g_gnss_snr_min;
+        mx = g_gnss_snr_max;
+        sv_view = g_gnss_sv_in_view;
+        sv_used = g_gnss_sv_used;
+        last_ms = g_gnss_sig_last_update_ms;
+        portEXIT_CRITICAL(&g_gnss_sig_lock);
 
         int64_t age_ms = (esp_timer_get_time() / 1000) - last_ms;
 
@@ -2938,7 +3267,8 @@ static void gps_signal_task(void *arg)
  * ───────────────────────────────────────────────────────────────────────── */
 static void ptp_rx_task(void *arg)
 {
-    /* Wait for L2TAP to be ready (set by on_link_up on first connect) */
+    /* Wait for L2TAP to be ready (set by timing_core_bringup at init, before
+     * any link is required — see the timing-core decoupling). */
     while (!atomic_load(&g_l2tap_ready))
     {
         vTaskDelay(pdMS_TO_TICKS(500));
@@ -2955,9 +3285,19 @@ static void ptp_rx_task(void *arg)
     } irec_u;
 
     /* Allocate RX scratch buffer once for the lifetime of this task.
-     * Never freed because this task never exits. */
+     * Never freed because this task never exits. Explicit check rather
+     * than assert(): under a production profile with assertions silenced
+     * or disabled, assert() compiles away and a boot-time allocation
+     * failure would surface later as a NULL dereference inside read().
+     * PTP receive cannot run without this buffer — flag FAULT and park. */
     uint8_t *frame_buf = calloc(1, 1536);
-    assert(frame_buf);
+    if (frame_buf == NULL)
+    {
+        ESP_LOGE(TAG, "ptp_rx: RX buffer allocation failed — PTP receive disabled");
+        led_set_state(LED_STATE_FAULT);
+        vTaskDelete(NULL);
+        return;
+    }
 
     while (1)
     {
@@ -3014,6 +3354,18 @@ static void ptp_rx_task(void *arg)
         if (eth_len < 14 + sizeof(ptp_header_t))
             goto timeout_check;
 
+        const ptp_header_t *rx_hdr = (const ptp_header_t *)(eth_frame + 14);
+
+        /* Accept only PTPv2 frames in OUR domain. versionPTP is the low
+         * nibble of its byte (majorVersion); the high nibble is v2.1's
+         * minorVersion and is deliberately ignored for compatibility.
+         * Without this gate, a Delay_Req from a neighboring domain was
+         * answered with a domain-0 response (cross-domain corruption), and
+         * foreign-domain or v1 Announces fed our BMCA. */
+        if ((rx_hdr->version_ptp & 0x0F) != 2 ||
+            rx_hdr->domain_number != PTP_DOMAIN)
+            goto timeout_check;
+
         uint8_t msg_type = eth_frame[14] & 0x0F;
 
         // ESP_LOGD("PTP_RX", "Type 0x%X @ %lld.%09ld",
@@ -3024,9 +3376,19 @@ static void ptp_rx_task(void *arg)
         switch (msg_type)
         {
         case PTP_MSG_DELAY_REQ:
-            /* Snapshot + enqueue only; delay_resp_task builds and sends.
+            /* Only the ACTING master answers Delay_Req. When BMCA has
+             * ceded mastership (g_i_am_master == false) we must stay
+             * silent: the multicast request is addressed to the winning
+             * master, and a second Delay_Resp carrying OUR (different)
+             * receiveTimestamp would corrupt every slave's path-delay
+             * math. Mirrors the g_i_am_master gate ptp_tx_task applies to
+             * Sync/Announce. (g_i_am_master is only ever written by this
+             * task — handle_announce and the reclaim below — so the read
+             * is race-free.)
+             * Snapshot + enqueue only; delay_resp_task builds and sends.
              * No logging on the receive hot path. */
-            enqueue_delay_req(eth_frame + 14, eth_len - 14, &hw_ts);
+            if (g_i_am_master)
+                enqueue_delay_req(eth_frame + 14, eth_len - 14, &hw_ts);
             break;
 
         case PTP_MSG_ANNOUNCE:
@@ -3038,7 +3400,9 @@ static void ptp_rx_task(void *arg)
         }
 
     timeout_check:
-        /* BMCA timeout logic — only master can reclaim */
+        /* BMCA announce-timeout reclaim: if we're currently acting as a slave
+         * and haven't heard an Announce from our best master for longer than
+         * ANNOUNCE_TIMEOUT_SEC, reclaim the master role. */
         if (!g_i_am_master)
         {
             time_t now = time(NULL);
@@ -3049,7 +3413,6 @@ static void ptp_rx_task(void *arg)
         }
 
         // ESP_LOGW("PTP_RX_TASK", "PTP RX task is working");
-        /* slave never reclaims master role — no action needed */
     } /* end of while(1) */
 } /* end of ptp_rx_task */
 
@@ -3066,14 +3429,14 @@ static void ptp_tx_task(void *arg)
             send_sync_and_followup();
 
             static int announce_div = 0;
-            if (++announce_div >= 2)
+            if (++announce_div >= PTP_ANNOUNCE_DIV)
             {
                 send_announce();
                 announce_div = 0;
             }
         }
 
-        vTaskDelayUntil(&wake, pdMS_TO_TICKS(1000));
+        vTaskDelayUntil(&wake, pdMS_TO_TICKS(PTP_SYNC_INTERVAL_MS));
         // ESP_LOGW("PTP_TX_TASK", "PTP TX task is working");
     }
 }
@@ -3089,11 +3452,12 @@ static void ptp_tx_task(void *arg)
  *                     across the dead window.
  *
  * watchdog_task     — checks every 30 s that the PHC seconds counter is
- *                     advancing. If frozen for >30 s, attempts EMAC restart.
- *                     Provides self-healing for slow RX descriptor exhaustion.
- *                     (Progress-tracking globals are in the global-state
- *                     section: g_last_progress_phc_s, g_last_progress_check_ms,
- *                     g_emac_restart_count.)
+ *                     advancing. Logs a warning after >30 s of freeze and
+ *                     attempts an EMAC restart after >60 s of freeze (bounded
+ *                     by g_emac_restart_count < 10). Provides self-healing for
+ *                     slow RX descriptor exhaustion. (Progress-tracking globals
+ *                     are in the global-state section: g_last_progress_phc_s,
+ *                     g_last_progress_check_ms, g_emac_restart_count.)
  * ═════════════════════════════════════════════════════════════════════════ */
 
 static void heap_monitor_task(void *arg)
@@ -3199,12 +3563,15 @@ static void emac_restart_preserve_phc(void)
         struct timespec ts_before;
         int64_t mono_before_us;
 
-        /* Use the SHARED servo spinlock, not a stack-local mux. A local mux
-         * provides no cross-core exclusion on the dual-core P4 — it only
-         * disables interrupts on this core. g_servo_spinlock is the mux
-         * that already guards PHC/servo state, so taking it here serializes
-         * the PHC+esp_timer snapshot against servo_task (which may be
-         * running on the other core). */
+        /* The critical section's real job is LOCAL: it pins the PHC read
+         * and the esp_timer read back-to-back with no preemption or
+         * interrupt between them on this core — that adjacency is what
+         * bounds the snapshot's capture error. It does NOT serialize
+         * servo_task's PHC ioctls on the other core (servo never takes
+         * this mux around them); cross-core exclusion comes from
+         * g_emac_restarting, set above, which fast-rejects every servo
+         * PHC write and every PPS-ISR capture for the whole restart
+         * window. */
         taskENTER_CRITICAL(&g_servo_spinlock);
         emac_get_time(&ts_before);
         mono_before_us = esp_timer_get_time();
@@ -3213,17 +3580,22 @@ static void emac_restart_preserve_phc(void)
         int64_t phc_ns_before = (int64_t)ts_before.tv_sec * 1000000000LL +
                                 (int64_t)ts_before.tv_nsec;
 
-        /* Snapshot the current frequency adjustment so we can re-apply it.
-         * g_freq_ppb is updated by servo_task; spinlock-protected read. */
-        taskENTER_CRITICAL(&g_servo_spinlock);
-        double saved_freq_ppb = g_freq_ppb;
-        taskEXIT_CRITICAL(&g_servo_spinlock);
+        /* Snapshot the frequency adjustment to re-apply after the restart.
+         * Read the lock-free g_freq_ppb_hw mirror — the int32 the hardware
+         * last received — NOT g_freq_ppb: that double is written by
+         * servo_task without any lock (a spinlocked read here never
+         * serialized anything), and a torn cross-core double read would
+         * extrapolate the dead window with garbage and re-step the PHC
+         * arbitrarily wrong. The mirror is stable for the whole window:
+         * g_emac_restarting (set above) blocks new ADJ writes, and a write
+         * in flight at flag-set time was applied to hardware either way. */
+        int32_t saved_freq_ppb = atomic_load(&g_freq_ppb_hw);
 
-        ESP_LOGI("WDT", "PHC snapshot: %lld.%09ld (mono=%lld us, freq_ppb=%.0f)",
+        ESP_LOGI("WDT", "PHC snapshot: %lld.%09ld (mono=%lld us, freq_ppb=%ld)",
                  (long long)ts_before.tv_sec,
                  (long)ts_before.tv_nsec,
                  (long long)mono_before_us,
-                 saved_freq_ppb);
+                 (long)saved_freq_ppb);
 
         /* ── Step 2: Stop driver ── */
         esp_err_t err = esp_eth_stop(g_eth_hndl);
@@ -3272,7 +3644,7 @@ static void emac_restart_preserve_phc(void)
         int64_t dt_ns = dt_us * 1000LL;
 
         /* Apply frequency correction. saved_freq_ppb is in ppb (1e-9 units). */
-        int64_t freq_correction_ns = (int64_t)((double)dt_ns * saved_freq_ppb * 1e-9);
+        int64_t freq_correction_ns = (int64_t)((double)dt_ns * (double)saved_freq_ppb * 1e-9);
         int64_t target_ns = phc_ns_before + dt_ns + freq_correction_ns;
 
         if (target_ns < 0)
@@ -3296,7 +3668,7 @@ static void emac_restart_preserve_phc(void)
         }
 
         /* ── Step 6: Re-apply frequency adjustment ── */
-        int32_t adj_ppb = (int32_t)saved_freq_ppb;
+        int32_t adj_ppb = saved_freq_ppb;
         esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_ppb);
 
         g_emac_restart_count++;
@@ -3318,12 +3690,24 @@ static void emac_restart_preserve_phc(void)
     atomic_store(&g_emac_restarting, false);
 }
 
+/* Read the PHC's live seconds counter — the watchdog's progress signal.
+ * The PHC ticks in hardware whenever the EMAC PTP block is alive, through
+ * holdover, link loss and GNSS removal alike, so "not advancing" really
+ * does mean the EMAC needs help (unlike the PPS capture, which merely
+ * means the GNSS stopped pulsing — see the Check 1 comment below). */
+static uint64_t watchdog_phc_seconds(void)
+{
+    struct timespec ts = {0};
+    emac_get_time(&ts);
+    return (uint64_t)ts.tv_sec;
+}
+
 static void watchdog_task(void *arg)
 {
     /* Wait 60 s for system to fully come up before arming */
     vTaskDelay(pdMS_TO_TICKS(60000));
 
-    g_last_progress_phc_s = g_pps_capture_ns / 1000000000ULL;
+    g_last_progress_phc_s = watchdog_phc_seconds();
     g_last_progress_check_ms = esp_timer_get_time() / 1000;
 
     while (1)
@@ -3331,63 +3715,87 @@ static void watchdog_task(void *arg)
         vTaskDelay(pdMS_TO_TICKS(30000));
 
         uint64_t now_ms = esp_timer_get_time() / 1000;
-        uint64_t cur_phc_s = g_pps_capture_ns / 1000000000ULL;
-
-        bool phc_frozen = (cur_phc_s == g_last_progress_phc_s);
-        uint64_t elapsed = now_ms - g_last_progress_check_ms;
 
         /* ───── Check 1: PHC freeze ─────
-         * PPS edges come from the GPIO ISR, not Ethernet. PHC freezing
-         * could indicate either GPS lost (timer ISR not firing — but PHC
-         * register is updated by emac_get_time() which we'd still read
-         * regardless), OR the EMAC RX path is jammed and starving the
-         * timer driver.
+         * Monitor the PHC ITSELF (hardware seconds counter, read via
+         * emac_get_time), NOT g_pps_capture_ns. The PPS capture only
+         * advances when GNSS PPS edges arrive, so sampling it here
+         * conflated "PPS stopped" (holdover, antenna unplugged, no GNSS
+         * module fitted — exactly when clock stability matters most, and
+         * nothing an EMAC restart can fix) with "EMAC PTP block wedged"
+         * (the one condition the restart IS for). The old form restarted
+         * the EMAC up to 10 times — bouncing the link, re-running DHCP
+         * and re-stepping the PHC each time — on every PPS outage longer
+         * than a minute.
          *
-         * Be conservative: only restart if frozen AND we're not in
-         * normal holdover (which is fine — PHC keeps ticking under HW). */
-        if (phc_frozen && elapsed > 30000)
+         * Gated on g_phc_ready: before timing_core_bringup() succeeds the
+         * PHC is legitimately not counting, and if bring-up FAILED the box
+         * is already in LED FAULT, where 10 EMAC restarts would not help.
+         * g_phc_ready reaches its final value during app_main, long before
+         * this task arms, so the gate is effectively static: either the
+         * arming baseline above was a live PHC read, or this branch never
+         * runs. */
+        if (atomic_load(&g_phc_ready))
         {
-            ESP_LOGW("WDT",
-                     "PHC frozen for %llu ms (phc_s=%llu) — health degraded",
-                     (unsigned long long)elapsed,
-                     (unsigned long long)cur_phc_s);
+            uint64_t cur_phc_s = watchdog_phc_seconds();
+            bool phc_frozen = (cur_phc_s == g_last_progress_phc_s);
+            uint64_t elapsed = now_ms - g_last_progress_check_ms;
 
-            /* Only attempt recovery after >60s freeze AND <10 prior restarts */
-            if (elapsed > 60000 && g_emac_restart_count < 10)
+            if (phc_frozen && elapsed > 30000)
             {
-                emac_restart_preserve_phc();
+                ESP_LOGW("WDT",
+                         "PHC frozen for %llu ms (phc_s=%llu) — health degraded",
+                         (unsigned long long)elapsed,
+                         (unsigned long long)cur_phc_s);
 
-                /* After restart, give system a moment to recover before next check */
-                vTaskDelay(pdMS_TO_TICKS(5000));
-                g_last_progress_phc_s = g_pps_capture_ns / 1000000000ULL;
-                g_last_progress_check_ms = esp_timer_get_time() / 1000;
+                /* Only attempt recovery after >60s freeze AND <10 prior restarts */
+                if (elapsed > 60000 && g_emac_restart_count < 10)
+                {
+                    emac_restart_preserve_phc();
+
+                    /* After restart, give system a moment to recover before next check */
+                    vTaskDelay(pdMS_TO_TICKS(5000));
+                    g_last_progress_phc_s = watchdog_phc_seconds();
+                    g_last_progress_check_ms = esp_timer_get_time() / 1000;
+                }
+                else if (g_emac_restart_count >= 10)
+                {
+                    ESP_LOGE("WDT",
+                             "EMAC restart limit reached — system needs reboot");
+                }
             }
-            else if (g_emac_restart_count >= 10)
+            else if (!phc_frozen)
             {
-                ESP_LOGE("WDT",
-                         "EMAC restart limit reached — system needs reboot");
+                g_last_progress_phc_s = cur_phc_s;
+                g_last_progress_check_ms = now_ms;
             }
-        }
-        else if (!phc_frozen)
-        {
-            g_last_progress_phc_s = cur_phc_s;
-            g_last_progress_check_ms = now_ms;
         }
 
         /* ───── Check 2: Heap pressure ─────
          * Now that the my_timegm leak is fixed, this should never trigger
-         * under normal operation. If it does, there's a secondary leak
-         * we missed — try a restart anyway in case it clears lwIP buffers. */
+         * under normal operation. If it does, there's a secondary leak we
+         * missed — try a restart anyway in case it clears lwIP buffers.
+         * This is a hail-mary: pressure caused by something other than the
+         * EMAC/lwIP pools (httpd, OTA) won't be helped by it, so the
+         * attempt is rate-limited to one per 5 minutes — sustained low
+         * heap must not burn the whole 10-restart budget (shared with
+         * Check 1) in five consecutive 30 s polls. The ESP_LOGE fires on
+         * every poll regardless, so the condition stays loudly visible. */
         size_t free_now = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
 
         if (free_now < 50000)
         {
+            static uint64_t last_heap_restart_ms = 0;
+
             ESP_LOGE("WDT",
                      "Critical heap pressure (%u bytes free) — attempting recovery",
                      (unsigned)free_now);
 
-            if (g_emac_restart_count < 10)
+            if (g_emac_restart_count < 10 &&
+                (last_heap_restart_ms == 0 ||
+                 now_ms - last_heap_restart_ms >= 300000))
             {
+                last_heap_restart_ms = now_ms;
                 emac_restart_preserve_phc();
                 vTaskDelay(pdMS_TO_TICKS(5000));
             }
@@ -3407,9 +3815,9 @@ static void watchdog_task(void *arg)
  *
  * Status-LED patterns:
  *   Solid off  : no Ethernet link (cable unplugged, PHY down)
- *   Slow blink : link up, but not yet locked (no GPS, or servo acquiring)
+ *   Slow blink : link up, but not yet locked (no GNSS, or servo acquiring)
  *   Solid on   : LOCKED — time output is trustworthy
- *   Heartbeat  : HOLDOVER — was locked, lost GPS, still serving (degrading)
+ *   Heartbeat  : HOLDOVER — was locked, lost GNSS, still serving (degrading)
  *   Fast blink : FAULT — something broken, check logs
  *
  * The task reads a shared atomic state variable. It never blocks the servo,
@@ -3549,9 +3957,9 @@ static void pps_led_task(void *arg)
  * 128x64 monochrome OLED driven via u8g2, with five screens the operator
  * cycles using the front-panel button:
  *
- *   Screen 1 (main)        — lock state, UTC, offset, GPS, slave count
+ *   Screen 1 (main)        — lock state, UTC, offset, GNSS, slave count
  *   Screen 2 (servo)       — servo internals, lock duration, ppb, integrator
- *   Screen 3 (gps)         — GNSS signal quality and SV counts
+ *   Screen 3 (gnss)         — GNSS signal quality and SV counts
  *   Screen 4 (network)     — link, IP, uptime, heap
  *   Screen 5 (timing cfg)  — TAU1201 timing-mode configuration status
  *
@@ -3626,20 +4034,27 @@ static void display_task(void *arg)
     u8g2_ClearBuffer(&u8g2);
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tf);
     u8g2_DrawStr(&u8g2, 0, 12, "PTP Grandmaster");
-    u8g2_DrawStr(&u8g2, 0, 26, "ESP32-P4");
+
+    /* Device name on two rows (worst case 20 + 12 chars, always fits
+     * the 21-column budget).  Falls back to "ESP32-P4" only if the OLED
+     * task ever beats ethernet_init to the buffer (it can't in the
+     * current app_main ordering, but the guard costs nothing). */
+    u8g2_DrawStr(&u8g2, 0, 24, g_host_line1[0] ? g_host_line1 : "ESP32-P4");
+    if (g_host_line2[0])
+        u8g2_DrawStr(&u8g2, 0, 36, g_host_line2);
 
     /* Firmware version from version.txt (via the app descriptor). Shown on the
      * boot splash so the running image is identifiable before any network or
-     * GPS is up. Guard against a NULL descriptor just in case. */
+     * GNSS is up. Guard against a NULL descriptor just in case. */
     {
         const esp_app_desc_t *app = esp_app_get_description();
         char vbuf[36]; /* "fw " + up to 31-char version + NUL */
         snprintf(vbuf, sizeof(vbuf), "fw %s",
                  (app && app->version[0]) ? app->version : "?");
-        u8g2_DrawStr(&u8g2, 0, 40, vbuf);
+        u8g2_DrawStr(&u8g2, 0, 48, vbuf);
     }
 
-    u8g2_DrawStr(&u8g2, 0, 54, "Booting...");
+    u8g2_DrawStr(&u8g2, 0, 60, "Booting...");
     u8g2_SendBuffer(&u8g2);
 
     vTaskDelay(pdMS_TO_TICKS(2000));
@@ -3672,7 +4087,7 @@ static void display_task(void *arg)
             render_screen_servo();
             break;
         case 2:
-            render_screen_gps();
+            render_screen_gnss();
             break;
         case 3:
             render_screen_network();
@@ -3704,25 +4119,26 @@ static void display_task(void *arg)
  *   - UTC time
  *   - Current offset
  *   - GNSS lock indicator
- *   - IP address
+ *   - TAI offset + active slave count
  * ─────────────────────────────────────────────────────────────────────────────────── */
 static void render_screen_main(void)
 {
     /* Snapshot state */
     led_state_t state = atomic_load(&s_led_state);
     int64_t offset = g_last_offset;
-    bool gps_valid = g_gps_valid;
-    time_t gps_sec = g_gps_seconds;
+    bool gnss_valid = g_gnss_valid;
+    time_t gnss_sec = g_gnss_seconds;
 
     /* Read-only mirror of advertise_as_holdover()'s settle condition. We do NOT
      * call that function from the display task: it has the side effect of
-     * setting g_settled_after_holdover (line ~739), and racing the servo task
-     * to write that flag would make PTP holdover-advertisement depend on screen
-     * refresh timing. So we recompute the same predicate here without writing
-     * anything. "Settling" = genuinely locked (not in holdover) but still inside
-     * the POST_HOLDOVER_SETTLE_MS window after the phase reference was last
-     * re-seated, which is exactly the window where PTP still advertises holdover
-     * while the box is operationally LOCKED. */
+     * setting g_settled_after_holdover (see the assignment inside
+     * advertise_as_holdover), and racing the servo task to write that flag
+     * would make PTP holdover-advertisement depend on screen refresh timing.
+     * So we recompute the same predicate here without writing anything.
+     * "Settling" = genuinely locked (not in holdover) but still inside the
+     * POST_HOLDOVER_SETTLE_MS window after the phase reference was last
+     * re-seated, which is exactly the window where PTP still advertises
+     * holdover while the box is operationally LOCKED. */
     bool settling = false;
     if (!g_holdover && !g_settled_after_holdover && g_lock_acquired_ms != 0)
     {
@@ -3764,10 +4180,10 @@ static void render_screen_main(void)
 
     /* UTC time (line 2) */
     u8g2_SetFont(&u8g2, u8g2_font_6x10_tf);
-    if (gps_valid && gps_sec > 1577836800LL)
+    if (gnss_valid && gnss_sec > 1577836800LL)
     {
         struct tm tm_utc;
-        time_t t = gps_sec;
+        time_t t = gnss_sec;
         gmtime_r(&t, &tm_utc);
         snprintf(buf, sizeof(buf), "UTC %02d:%02d:%02d",
                  tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
@@ -3791,8 +4207,8 @@ static void render_screen_main(void)
 
     /* GNSS sat indicator (line 4) — sentinel: GNSS recently updated? */
     time_t now = time(NULL);
-    bool gps_fresh = (now - g_last_gps_update) < 3;
-    snprintf(buf, sizeof(buf), "GNSS: %s", gps_fresh ? "OK" : "no fix");
+    bool gnss_fresh = (now - g_last_gnss_update) < 3;
+    snprintf(buf, sizeof(buf), "GNSS: %s", gnss_fresh ? "OK" : "no fix");
     u8g2_DrawStr(&u8g2, 0, 52, buf);
 
     /* Bottom line: TAI offset + active slave count */
@@ -3803,12 +4219,12 @@ static void render_screen_main(void)
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Screen 2: Servo internals — engineer's view of timing health
- *   - State + lock duration
- *   - Current offset
+ *   - Advertised PTP clockClass (cc:6/7/248), right-aligned on title row
+ *   - Lock duration / holdover age
+ *   - Quality % + recent raw-offset peak span + lifetime reject total,
+ *     OR reject-streak warning "REJ n/45 !" when a streak is active
  *   - Frequency adjustment (ppb)
- *   - Integrator value
- *   - PPS edge counter
- *   - Holdover age (if applicable)
+ *   - Integrator value + PPS edge counter (compacted with k/M suffixes)
  * ───────────────────────────────────────────────────────────────────────── */
 static void render_screen_servo(void)
 {
@@ -3876,7 +4292,7 @@ static void render_screen_servo(void)
     }
     else if (state == LED_STATE_HOLDOVER)
     {
-        time_t age = time(NULL) - g_last_gps_update;
+        time_t age = time(NULL) - g_last_gnss_update;
         snprintf(buf, sizeof(buf), "Holdover: %llds", (long long)age);
     }
     else
@@ -3989,18 +4405,19 @@ static void render_screen_servo(void)
  * driven by the receiver module (typically 1 Hz). If "No GSV data" appears,
  * the module isn't emitting GSV; check NMEA sentence configuration.
  *
- * Constellations covered: GPS, GLONASS, Galileo, BeiDou, multi-GNSS (GN).
+ * Constellations covered: GPS, GLONASS, Galileo, BeiDou, multi-GNSS (GN),
+ * plus a catch-all "other" slot for any additional talkers (see talker_index).
  * ───────────────────────────────────────────────────────────────────────── */
-static void render_screen_gps(void)
+static void render_screen_gnss(void)
 {
-    portENTER_CRITICAL(&g_gps_sig_lock);
-    uint8_t avg = g_gps_snr_avg;
-    uint8_t mn = g_gps_snr_min;
-    uint8_t mx = g_gps_snr_max;
-    uint8_t sv_view = g_gps_sv_in_view;
-    uint8_t sv_used = g_gps_sv_used;
-    int64_t last_ms = g_gps_sig_last_update_ms;
-    portEXIT_CRITICAL(&g_gps_sig_lock);
+    portENTER_CRITICAL(&g_gnss_sig_lock);
+    uint8_t avg = g_gnss_snr_avg;
+    uint8_t mn = g_gnss_snr_min;
+    uint8_t mx = g_gnss_snr_max;
+    uint8_t sv_view = g_gnss_sv_in_view;
+    uint8_t sv_used = g_gnss_sv_used;
+    int64_t last_ms = g_gnss_sig_last_update_ms;
+    portEXIT_CRITICAL(&g_gnss_sig_lock);
 
     int64_t now_ms = esp_timer_get_time() / 1000;
     int64_t age_ms = now_ms - last_ms;
@@ -4076,12 +4493,10 @@ static void render_screen_gps(void)
 
 /* ─────────────────────────────────────────────────────────────────────────
  * Screen 4: Network / system — connectivity and uptime
- *   - Link state
+ *   - Link state (+ L2TAP-ready indicator)
  *   - IP address
- *   - MAC address
  *   - Uptime
  *   - Free heap
- *   - EMAC restart count
  * ───────────────────────────────────────────────────────────────────────── */
 static void render_screen_network(void)
 {
@@ -4097,49 +4512,41 @@ static void render_screen_network(void)
     u8g2_DrawStr(&u8g2, 0, 10, "NETWORK");
     u8g2_DrawHLine(&u8g2, 0, 12, 128);
 
-    /* Link status */
-    snprintf(buf, sizeof(buf), "Link: %s%s",
-             link_up ? "UP" : "DOWN",
-             l2tap_ready ? " (rdy)" : "");
-    u8g2_DrawStr(&u8g2, 0, 24, buf);
-
-    /* IP address */
+    /* Row 1: link + IP together.  "UP 192.168.100.243" is <= 18 chars.
+     * A '!' after UP flags link-up-but-L2TAP-not-ready.  Freed rows go
+     * to the hostname below -- the identity this page exists to answer. */
     if (link_up && g_eth_netif)
     {
         esp_netif_ip_info_t ip;
         if (esp_netif_get_ip_info(g_eth_netif, &ip) == ESP_OK && ip.ip.addr != 0)
-        {
-            snprintf(buf, sizeof(buf), IPSTR, IP2STR(&ip.ip));
-            u8g2_DrawStr(&u8g2, 0, 35, buf);
-        }
+            snprintf(buf, sizeof(buf), "UP%s " IPSTR,
+                     l2tap_ready ? "" : "!", IP2STR(&ip.ip));
         else
-        {
-            u8g2_DrawStr(&u8g2, 0, 35, "(no IP)");
-        }
+            snprintf(buf, sizeof(buf), "UP%s (no IP)", l2tap_ready ? "" : "!");
     }
     else
     {
-        u8g2_DrawStr(&u8g2, 0, 35, "(no link)");
+        snprintf(buf, sizeof(buf), "DOWN (no link)");
     }
+    u8g2_DrawStr(&u8g2, 0, 24, buf);
 
-    /* Uptime */
+    /* Rows 2-3: hostname the DHCP server sees.  Reverse-lookup with
+     * hostname_to_mac.py, or mac_hostname_to_mac() on-device. */
+    u8g2_DrawStr(&u8g2, 0, 35, g_host_line1[0] ? g_host_line1 : "(no hostname)");
+    if (g_host_line2[0])
+        u8g2_DrawStr(&u8g2, 0, 46, g_host_line2);
+
+    /* Row 4: uptime + free heap combined.  "Up 12d03h H:412K". */
     int64_t up_s = (now_ms - boot_ms) / 1000;
     int days = (int)(up_s / 86400);
     int hrs = (int)((up_s % 86400) / 3600);
     int mins = (int)((up_s % 3600) / 60);
     if (days > 0)
-    {
-        snprintf(buf, sizeof(buf), "Up: %dd %02dh%02dm", days, hrs, mins);
-    }
+        snprintf(buf, sizeof(buf), "Up %dd%02dh H:%uK",
+                 days, hrs, (unsigned)(free_heap / 1024));
     else
-    {
-        int secs = (int)(up_s % 60);
-        snprintf(buf, sizeof(buf), "Up: %02d:%02d:%02d", hrs, mins, secs);
-    }
-    u8g2_DrawStr(&u8g2, 0, 46, buf);
-
-    /* Free heap on bottom line */
-    snprintf(buf, sizeof(buf), "Heap: %u KB", (unsigned)(free_heap / 1024));
+        snprintf(buf, sizeof(buf), "Up %02d:%02d H:%uK",
+                 hrs, mins, (unsigned)(free_heap / 1024));
     u8g2_DrawStr(&u8g2, 0, 57, buf);
 }
 
@@ -4210,8 +4617,10 @@ static void render_screen_timing_cfg(void)
  * SECTION: Network initialization
  *
  * Ethernet/IP bring-up, DHCP-with-static-fallback, L2TAP setup, and the
- * link up/down handlers. on_link_up performs the one-shot L2TAP + PHC start
- * on first connect and is idempotent on subsequent link-ups.
+ * link up/down handlers. Since the timing-core decoupling, on_link_up only
+ * handles link/PTP-serving concerns (multicast filter refresh, atomics,
+ * LED update) — the one-shot L2TAP + PHC start is done at init in
+ * timing_core_bringup() and does NOT depend on a link.
  * ═════════════════════════════════════════════════════════════════════════ */
 
 static void ip_event_handler(void *arg, esp_event_base_t base,
@@ -4383,11 +4792,11 @@ static bool timing_core_bringup(void)
         return false;
     }
 
-    /* Timing core is live: servo + pps may now run and discipline to GPS,
+    /* Timing core is live: servo + pps may now run and discipline to GNSS,
      * independent of any peer. */
     atomic_store(&g_phc_ready, true);
     ESP_LOGI("INIT", "Timing core ready (PHC running, L2TAP bound) — "
-                     "GPS disciplining may begin without a link");
+                     "GNSS disciplining may begin without a link");
     return true;
 }
 
@@ -4397,7 +4806,7 @@ static bool timing_core_bringup(void)
  * This is now strictly about LINK / PTP-serving concerns. The one-shot timing
  * core bring-up (L2TAP + PHC) has moved to timing_core_bringup(), run at init.
  * A link going up no longer has any bearing on whether the clock disciplines
- * to GPS — only on whether PTP packets flow. */
+ * to GNSS — only on whether PTP packets flow. */
 static void on_link_up(void)
 {
     /* Refresh the PTP multicast filter on every link-up. The driver de-dupes
@@ -4437,7 +4846,7 @@ static void on_link_down(void)
      * a harmless no-op (give on an already-full binary sem just fails). */
     if (g_link_down_sem)
         xSemaphoreGive(g_link_down_sem);
-    /* Don't touch LED state — Ethernet link != GPS lock.
+    /* Don't touch LED state — Ethernet link != GNSS lock.
      * If servo was LOCKED, it stays LOCKED. The OLED's screen 3 reflects
      * link state separately. */
 }
@@ -4493,6 +4902,40 @@ static esp_err_t ethernet_init(void)
     g_eth_netif = esp_netif_new(&netif_cfg);
     esp_netif_attach(g_eth_netif, esp_eth_new_netif_glue(g_eth_hndl));
     /* DHCP client is started automatically by ESP_NETIF_DEFAULT_ETH. */
+
+    /* Derive the hostname string and OLED lines from the eFuse MAC now
+     * (pure CPU work, no netif state needed).  The actual set_hostname
+     * call has to wait until after esp_eth_start() in app_main -- see
+     * mac_hostname_apply() there.  Deriving here means the OLED boot
+     * splash can self-identify from the very first frame. */
+    esp_err_t hostname_err =
+        mac_hostname_get(g_hostname,
+                         sizeof g_hostname,
+                         MAC_HOSTNAME_DASHED);
+
+    if (hostname_err != ESP_OK)
+    {
+        ESP_LOGE(TAG,
+                 "Failed to derive hostname from MAC: %s",
+                 esp_err_to_name(hostname_err));
+        return hostname_err;
+    }
+
+    if (mac_hostname_display_lines(g_hostname,
+                                   g_host_line1,
+                                   sizeof g_host_line1,
+                                   g_host_line2,
+                                   sizeof g_host_line2) != 0)
+    {
+        ESP_LOGE(TAG,
+                 "Failed to format hostname for OLED: %s",
+                 g_hostname);
+        return ESP_FAIL;
+    }
+
+    ESP_LOGI(TAG, "Device hostname: %s", g_hostname);
+    ESP_LOGI(TAG, "OLED hostname line 1: %s", g_host_line1);
+    ESP_LOGI(TAG, "OLED hostname line 2: %s", g_host_line2);
 
     return ESP_OK;
 }
@@ -4581,14 +5024,14 @@ static bool phc_start_blocking(void)
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION: Hardware initialization
  *
- * GPS UART + PPS GPIO setup, and the TAU1201 timing-mode configuration
+ * GNSS UART + PPS GPIO setup, and the TAU1201 timing-mode configuration
  * error callback (surfaced on OLED screen 5).
  * ═════════════════════════════════════════════════════════════════════════ */
 
 /* -----------------------------------------------------------------------
  * GNSS Grandmaster Code
  * ----------------------------------------------------------------------- */
-static void gps_uart_init(void)
+static void gnss_uart_init(void)
 {
     uart_config_t cfg = {
         .baud_rate = 115200,
@@ -4598,9 +5041,9 @@ static void gps_uart_init(void)
         .flow_ctrl = UART_HW_FLOWCTRL_DISABLE,
     };
 
-    uart_driver_install(GPS_UART_NUM, 2048, 0, 0, NULL, 0);
-    uart_param_config(GPS_UART_NUM, &cfg);
-    uart_set_pin(GPS_UART_NUM, GPS_TX_PIN, GPS_RX_PIN,
+    uart_driver_install(GNSS_UART_NUM, 2048, 0, 0, NULL, 0);
+    uart_param_config(GNSS_UART_NUM, &cfg);
+    uart_set_pin(GNSS_UART_NUM, GNSS_TX_PIN, GNSS_RX_PIN,
                  UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE);
 }
 
@@ -4618,14 +5061,25 @@ static void pps_init(void)
      * does not interfere with a real PPS output. */
     gpio_config_t io_conf = {
         .pin_bit_mask = (1ULL << PPS_GPIO),
-        .mode         = GPIO_MODE_INPUT,
-        .pull_up_en   = GPIO_PULLUP_DISABLE,
+        .mode = GPIO_MODE_INPUT,
+        .pull_up_en = GPIO_PULLUP_DISABLE,
         .pull_down_en = GPIO_PULLDOWN_ENABLE,
-        .intr_type    = GPIO_INTR_POSEDGE,
+        .intr_type = GPIO_INTR_POSEDGE,
     };
 
     gpio_config(&io_conf);
 
+    /* DELIBERATE: the ISR service is registered WITHOUT ESP_INTR_FLAG_IRAM.
+     * pps_isr_handler is IRAM_ATTR, but it calls esp_eth_ioctl(), which is
+     * flash-resident — flagging the interrupt IRAM would let it fire during
+     * flash-cache-off windows (OTA erase/write) and crash on the first
+     * flash-resident call. Without the flag the interrupt is simply
+     * DEFERRED across those windows: during an OTA upload, the occasional
+     * PPS capture lands milliseconds late and shows up as HARD_REJECT
+     * streak entries on OLED screen 2 — expected, bounded, self-clearing.
+     * Making the capture path truly IRAM-safe would mean bypassing
+     * esp_eth_ioctl for raw PHC register reads, which is more fragile
+     * across IDF upgrades than the ms-scale OTA-only artifact it removes. */
     gpio_install_isr_service(0);
     gpio_isr_handler_add(PPS_GPIO, pps_isr_handler, NULL);
 }
@@ -4640,9 +5094,10 @@ static void timing_config_error_cb(const char *failed_step_name)
  * SECTION: app_main
  *
  * Brings up the OLED, records boot time, launches the button/display tasks,
- * starts Ethernet + LED + PPS, initializes the GPS UART and the TAU1201
+ * starts Ethernet + LED + PPS, initializes the GNSS UART and the TAU1201
  * timing-mode configurator, then launches all worker tasks (they self-gate
- * on g_link_up / g_l2tap_ready) and finally the web server.
+ * on g_phc_ready for the timing core, and on g_link_up / g_l2tap_ready for
+ * PTP packet I/O) and finally the web server.
  *
  * NOTE: web_server.h is included here, immediately before app_main, exactly
  * as in the original — keep this placement.
@@ -4700,10 +5155,44 @@ void app_main(void)
      * Must exist before any l2tap_send_ptp call (the PTP tasks below). */
     g_l2tap_tx_mtx = xSemaphoreCreateMutex();
 
-    /* Ethernet driver init + start. Will not block waiting for link. */
-    ethernet_init();
+    /* DHCP-fallback machinery — created BEFORE esp_eth_start so IP_EVENT_
+     * ETH_GOT_IP can never fire while g_got_ip_sem is still NULL (the
+     * handler NULL-guards, but a silently dropped give would look like
+     * "DHCP never answered" and push a perfectly good lease onto the
+     * static fallback 30 s later). The task starts now too, so its
+     * first-cycle drain runs before any link can possibly come up and a
+     * genuinely early GOT_IP can't be mistaken for a stale one from a
+     * previous cycle. Until link-up the task only polls g_link_up at
+     * 500 ms — it touches no netif state before ethernet_init sets it. */
+    g_got_ip_sem = xSemaphoreCreateBinary();
+    g_link_down_sem = xSemaphoreCreateBinary();
+    xTaskCreate(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
+
+    /* Ethernet driver init + start. Will not block waiting for link.
+     * Fatal driver/netif failures abort inside ethernet_init via
+     * ESP_ERROR_CHECK; a non-OK return here means only the OPTIONAL
+     * hostname derivation failed — the device remains a fully functional
+     * grandmaster, it just appears under the default lwIP name (and
+     * g_hostname stays empty, which every consumer already guards). */
+    esp_err_t eth_init_err = ethernet_init();
+    if (eth_init_err != ESP_OK)
+        ESP_LOGW("MAIN",
+                 "ethernet_init: hostname derivation failed (%s) — "
+                 "continuing with default hostname",
+                 esp_err_to_name(eth_init_err));
     ESP_ERROR_CHECK(esp_eth_start(g_eth_hndl));
     ESP_LOGI("ETH", "Ethernet started (link state will be reported on connect)");
+
+    /* Install the hostname NOW -- after esp_eth_start() so lwIP has
+     * fully wired the netif, and before the first DHCP DISCOVER so the
+     * unit appears under its stable name in leases from the first
+     * transaction.  The hostname persists on the netif for the whole
+     * app lifetime -- surviving cable unplug/replug and DHCP restarts
+     * without any per-event re-application.  Logging (success and the
+     * specific CONFIG_LWIP_MAX_HOSTNAME_LEN hint on failure) is owned
+     * by the component. */
+    if (g_hostname[0])
+        mac_hostname_apply(g_eth_netif, g_hostname);
 
     /* Now safe to arm the PPS GPIO interrupt: g_pps_sem and g_eth_hndl exist. */
     pps_init();
@@ -4711,14 +5200,14 @@ void app_main(void)
     /* Start the LED subsystem BEFORE timing_core_bringup, so that if bring-up
      * fails it can surface LED_STATE_FAULT to a running LED task. Initial state
      * is NO_LINK (no peer yet); the servo will move it to ACQUIRING/LOCKED as it
-     * disciplines to GPS, independent of link. */
+     * disciplines to GNSS, independent of link. */
     led_start();
     led_set_state(LED_STATE_NO_LINK);
     xTaskCreate(pps_led_task, "pps_led", 2048, NULL, 1, NULL);
 
     /* Bring up the timing core NOW — driver is started, so the PHC and L2TAP
      * can come up without waiting for a peer/link. This is the architectural
-     * decoupling: GPS disciplining begins at power-on, and PTP serving begins
+     * decoupling: GNSS disciplining begins at power-on, and PTP serving begins
      * later, whenever a link appears, finding the clock already locked.
      *
      * On failure, timing_core_bringup sets LED_STATE_FAULT and returns false;
@@ -4752,21 +5241,21 @@ void app_main(void)
      *   ESP_LOGI("ETH", "Promiscuous mode: ON");
      */
 
-    /* GPS UART can come up immediately — independent of network */
-    gps_uart_init();
-    uart_flush(GPS_UART_NUM);
+    /* GNSS UART can come up immediately — independent of network */
+    gnss_uart_init();
+    uart_flush(GNSS_UART_NUM);
 
     /* Kick off the TAU1201 timing-mode configurator. Runs as its own task,
-     * shares the GPS UART RX stream via allystar_timing_feed_data() which is
-     * called from gps_task. Fails are reported via the callback and the
+     * shares the GNSS UART RX stream via allystar_timing_feed_data() which is
+     * called from gnss_task. Fails are reported via the callback and the
      * OLED auto-jumps to screen 5. */
     initialize_allystar_timing_service(timing_config_error_cb);
 
-    g_got_ip_sem = xSemaphoreCreateBinary();
-    g_link_down_sem = xSemaphoreCreateBinary();
-    xTaskCreate(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
+    /* (DHCP-fallback semaphores + task were created earlier, before
+     * esp_eth_start — see the ordering comment there.) */
 
-    /* Launch all tasks now. They self-gate on g_link_up / g_l2tap_ready. */
+    /* Launch all tasks now. They self-gate on g_phc_ready (timing core:
+     * servo, pps) and on g_link_up / g_l2tap_ready (PTP packet I/O). */
 
     /* Delay_Resp producer/consumer: create the queue and worker BEFORE the RX
      * task, so enqueue_delay_req always has a valid queue. Worker priority 6
@@ -4779,8 +5268,8 @@ void app_main(void)
     xTaskCreate(ptp_rx_task, "ptp_rx", 8192, NULL, 7, NULL);
     xTaskCreate(ptp_tx_task, "ptp_tx", 8192, NULL, 5, NULL);
 
-    xTaskCreate(gps_task, "gps", 6144, NULL, 5, NULL);
-    xTaskCreate(gps_signal_task, "gps_sig", 3072, NULL, 1, NULL);
+    xTaskCreate(gnss_task, "gnss", 6144, NULL, 5, NULL);
+    xTaskCreate(gnss_signal_task, "gnss_sig", 3072, NULL, 1, NULL);
     xTaskCreate(servo_task, "servo", 6144, NULL, 6, &servo_task_handle);
     xTaskCreate(pps_task, "pps_task", 4096, NULL, 7, NULL);
 

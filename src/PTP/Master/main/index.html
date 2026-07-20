@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Cdefs%3E%3ClinearGradient%20id='g'%20x1='0'%20y1='0'%20x2='1'%20y2='1'%3E%3Cstop%20offset='0'%20stop-color='%234ec9b0'/%3E%3Cstop%20offset='1'%20stop-color='%237aa2f7'/%3E%3C/linearGradient%3E%3C/defs%3E%3Ccircle%20cx='32'%20cy='32'%20r='28'%20fill='%230b1018'%20stroke='url(%23g)'%20stroke-width='4'/%3E%3Ccircle%20cx='32'%20cy='11'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='53'%20cy='32'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='32'%20cy='53'%20r='2'%20fill='%234ec9b0'/%3E%3Ccircle%20cx='11'%20cy='32'%20r='2'%20fill='%234ec9b0'/%3E%3Cline%20x1='32'%20y1='32'%20x2='32'%20y2='16'%20stroke='%23e6edf7'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Cline%20x1='32'%20y1='32'%20x2='44'%20y2='32'%20stroke='%237aa2f7'%20stroke-width='3'%20stroke-linecap='round'/%3E%3Ccircle%20cx='32'%20cy='32'%20r='3'%20fill='%23e6edf7'/%3E%3Ccircle%20cx='50'%20cy='14'%20r='7'%20fill='%230b1018'/%3E%3Ccircle%20cx='50'%20cy='14'%20r='5'%20fill='%2350fa7b'/%3E%3C/svg%3E">
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2064%2064'%3E%3Ccircle%20cx='32'%20cy='32'%20r='30'%20fill='%2316a34a'%20stroke='%2386efac'%20stroke-width='2.5'/%3E%3Cg%20stroke='%23dcfce7'%20stroke-width='2.5'%20stroke-linecap='round'%20opacity='0.75'%3E%3Cline%20x1='32'%20y1='7'%20x2='32'%20y2='12'/%3E%3Cline%20x1='32'%20y1='52'%20x2='32'%20y2='57'/%3E%3Cline%20x1='7'%20y1='32'%20x2='12'%20y2='32'/%3E%3Cline%20x1='52'%20y1='32'%20x2='57'%20y2='32'/%3E%3C/g%3E%3Cg%20stroke='%23ffffff'%20stroke-linecap='round'%20fill='none'%3E%3Cpath%20d='M%2032%2032%20L%2023%2026'%20stroke-width='5.5'/%3E%3Cpath%20d='M%2032%2032%20L%2043%2021'%20stroke-width='5'/%3E%3C/g%3E%3Ccircle%20cx='32'%20cy='32'%20r='3.5'%20fill='%23ffffff'/%3E%3C/svg%3E">
 <title>PTP Master &mdash; ESP32-P4</title>
 <style>
   :root {
@@ -97,6 +97,7 @@
   .row .value.warn{color:var(--warn);} .row .value.err{color:var(--err);}
   .row .value.info{color:var(--info);} .row .value.accent{color:var(--accent);}
   .row .value.purple{color:var(--purple);}
+  .row .value.hostname{max-width:220px;min-width:0;overflow-wrap:anywhere;line-height:1.25;}
 
   .chip { display:inline-block; padding:2px 8px; border-radius:4px;
           font-family:var(--mono); font-size:11px; letter-spacing:0.5px;
@@ -182,6 +183,33 @@
   /* fade flash on update */
   .flash { animation:flash 0.6s ease; }
   @keyframes flash { 0%{background:rgba(78,201,176,0.1);} 100%{background:transparent;} }
+
+  /* Load / Soak monitor panel */
+  .btn-mon { display:inline-flex; align-items:center; gap:8px; cursor:pointer;
+             padding:7px 14px; border-radius:999px; font-family:var(--mono);
+             font-size:12px; letter-spacing:1px; user-select:none;
+             background:rgba(80,250,123,0.08); border:1px solid rgba(80,250,123,0.35);
+             color:var(--ok); transition:all 0.2s ease; }
+  .btn-mon:hover { background:rgba(80,250,123,0.16); transform:translateY(-1px); }
+  .btn-mon.on { background:rgba(255,85,119,0.08); border-color:rgba(255,85,119,0.35); color:var(--err); }
+  .btn-mon.on:hover { background:rgba(255,85,119,0.16); }
+  .btn-mon .icon { font-family:var(--emoji); font-size:13px; }
+  .mon-stats { display:grid; grid-template-columns:repeat(4,1fr); gap:14px; margin-bottom:16px; }
+  @media (max-width:960px){ .mon-stats{grid-template-columns:repeat(2,1fr);} }
+  .mon-spark { display:grid; grid-template-columns:1fr 1fr; gap:14px; margin-bottom:6px; }
+  @media (max-width:960px){ .mon-spark{grid-template-columns:1fr;} }
+  .spark-box { background:var(--bg-0); border:1px solid var(--line-soft); border-radius:10px; padding:10px 12px; }
+  .spark-box .sh { display:flex; justify-content:space-between; align-items:baseline; margin-bottom:6px; }
+  .spark-box .sh .t { font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:var(--text-dim); font-weight:700; }
+  .spark-box .sh .v { font-family:var(--mono); font-size:12px; color:var(--text); font-variant-numeric:tabular-nums; }
+  .spark-box canvas { display:block; width:100%; height:48px; }
+  .mon-idle { color:var(--text-mute); font-family:var(--mono); font-size:12px;
+              text-align:center; padding:22px 12px; letter-spacing:0.3px; line-height:1.6; }
+  .mon-check { display:inline-flex; align-items:center; gap:6px; cursor:pointer;
+              font-family:var(--mono); font-size:11px; letter-spacing:0.5px;
+              color:var(--text-dim); user-select:none; }
+  .mon-check:hover { color:var(--text); }
+  .mon-check input { accent-color:var(--accent); width:13px; height:13px; cursor:pointer; margin:0; }
 </style>
 </head>
 <body>
@@ -226,9 +254,9 @@
         <div class="sub" id="v_freq_sub">Kp=0.4 &middot; Ki=0.3</div>
       </div>
       <div class="metric">
-        <div class="metric-head"><span class="icon">&#x1F6F0;&#xFE0F;</span><span class="label">GPS / PPS</span></div>
-        <div class="big" id="v_gps">&mdash;</div>
-        <div class="sub" id="v_gps_sub">&mdash;</div>
+        <div class="metric-head"><span class="icon">&#x1F6F0;&#xFE0F;</span><span class="label">GNSS / PPS</span></div>
+        <div class="big" id="v_gnss">&mdash;</div>
+        <div class="sub" id="v_gnss_sub">&mdash;</div>
       </div>
     </div>
 
@@ -276,8 +304,8 @@
         <div class="row"><span class="icon">&#x1F9F1;</span>
           <span class="label">Largest free block</span>
           <span class="value" id="v_heap_lfb">&mdash;</span></div>
-        <div class="row"><span class="icon">&#x1F3DB;&#xFE0F;</span>
-          <span class="label">RETENT_RAM<span class="hint">@ 0x4FF178D0</span></span>
+        <div class="row" title="Internal SRAM that can be accessed by the ESP32-P4 retention-DMA engine. ESP-IDF may also use it as ordinary heap memory."><span class="icon">&#x1F3DB;&#xFE0F;</span>
+          <span class="label">Retention-capable RAM<span class="hint">MALLOC_CAP_RETENTION &middot; free / total</span></span>
           <span class="value dim" id="v_retent">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4D0;</span>
           <span class="label">RAM regions</span>
@@ -301,6 +329,9 @@
         <div class="row"><span class="icon">&#x1F50C;</span>
           <span class="label">Link status</span>
           <span class="value" id="v_link">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F3E0;</span>
+          <span class="label">Hostname<span class="hint">DHCP / DNS / mDNS identity</span></span>
+          <span class="value accent hostname" id="v_hostname">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F310;</span>
           <span class="label">IP address<span class="hint" id="v_ip_hint">&mdash;</span></span>
           <span class="value info" id="v_ip">&mdash;</span></div>
@@ -336,7 +367,7 @@
           <span class="label">Clock ID</span>
           <span class="value dim" id="v_clockid">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F551;</span>
-          <span class="label">UTC time<span class="hint">from GPS &middot; gmtime_r</span></span>
+          <span class="label">UTC time<span class="hint">from GNSS &middot; gmtime_r</span></span>
           <span class="value info" id="v_utc">&mdash;</span></div>
         <div class="row"><span class="icon">&#x23F3;</span>
           <span class="label">TAI &minus; UTC offset</span>
@@ -388,8 +419,8 @@
           <span class="label">Post-holdover settled</span>
           <span class="value" id="v_settled">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F6F0;&#xFE0F;</span>
-          <span class="label">GPS last update</span>
-          <span class="value" id="v_gpsage">&mdash;</span></div>
+          <span class="label">GNSS last update</span>
+          <span class="value" id="v_gnssage">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4A1;</span>
           <span class="label">PPS LED<span class="hint">GPIO 3 &middot; 50 ms pulse</span></span>
           <span class="value info" id="v_ppsled">&mdash;</span></div>
@@ -416,6 +447,36 @@
       </table>
     </div>
 
+    <!-- LOAD / SOAK MONITOR (opt-in; polls /api/health) -->
+    <div class="card col-12">
+      <div class="card-header">
+        <h2>Load / Soak Monitor</h2>
+        <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+          <label class="mon-check" title="While monitoring, stop the 5s /api/status poll so the page requests only /api/health"><input type="checkbox" id="monPauseStatus"> pause status poll</label>
+          <span class="badge" id="monBadge">stopped &middot; polls /api/health</span>
+          <span class="btn-mon" id="monToggle"><span class="icon">&#x25B6;&#xFE0F;</span><span id="monToggleText">Start monitoring</span></span>
+        </div>
+      </div>
+      <div id="monIdle" class="mon-idle">Monitoring is off &mdash; the device is <strong>not</strong> polled until you opt in.<br>Click &ldquo;Start monitoring&rdquo; to begin fetching <code>/api/health</code> every <span id="monIdleMs">1000</span>&nbsp;ms.</div>
+      <div id="monBody" style="display:none;">
+        <div class="mon-stats">
+          <div class="metric"><div class="metric-head"><span class="icon">&#x1F4C8;</span><span class="label">Sync Jitter p2p</span></div><div class="big" id="h_jit">&mdash;</div><div class="sub" id="h_jit_sub">peak-to-peak &middot; window</div></div>
+          <div class="metric"><div class="metric-head"><span class="icon">&#x1F525;</span><span class="label">RX Task CPU</span></div><div class="big" id="h_rxcpu">&mdash;</div><div class="sub" id="h_rxcpu_sub">ptp_rx share</div></div>
+          <div class="metric"><div class="metric-head"><span class="icon">&#x1F4C9;</span><span class="label">Heap Min</span></div><div class="big" id="h_heapmin">&mdash;</div><div class="sub" id="h_heapmin_sub">low-water since boot</div></div>
+          <div class="metric"><div class="metric-head"><span class="icon">&#x1F4D0;</span><span class="label">RX Stack HWM</span></div><div class="big" id="h_rxstack">&mdash;</div><div class="sub" id="h_rxstack_sub">headroom remaining</div></div>
+        </div>
+        <div class="mon-spark">
+          <div class="spark-box"><div class="sh"><span class="t">Sync jitter p2p (&#xB5;s)</span><span class="v" id="sp_jit_v">&mdash;</span></div><canvas id="sp_jit" width="560" height="48"></canvas></div>
+          <div class="spark-box"><div class="sh"><span class="t">Heap min (KB)</span><span class="v" id="sp_heap_v">&mdash;</span></div><canvas id="sp_heap" width="560" height="48"></canvas></div>
+        </div>
+        <table class="tasks" style="margin-top:6px;">
+          <thead><tr><th style="width:30%">Task</th><th style="width:14%">Priority</th><th style="width:30%">CPU (since last poll)</th><th>Stack high-water</th></tr></thead>
+          <tbody id="monTasksBody"><tr><td colspan="4" style="text-align:center;color:var(--text-mute);padding:16px;">awaiting first poll&hellip;</td></tr></tbody>
+        </table>
+        <div style="margin-top:10px; font-family:var(--mono); font-size:10.5px; color:var(--text-mute); letter-spacing:0.5px;">Last health poll <span id="monLast">&mdash;</span> &middot; interval <span id="monInt">&mdash;</span>&nbsp;ms &middot; <span id="monRt">&mdash;</span></div>
+      </div>
+    </div>
+
   </div>
 
   <footer>
@@ -429,11 +490,16 @@
 <script>
 "use strict";
 
+/* Health-monitor poll interval (ms), injected from the C #define
+   HEALTH_POLL_INTERVAL_MS so firmware and page never disagree. */
+const HEALTH_POLL_MS = " SP_STR(HEALTH_POLL_INTERVAL_MS) ";
+
 /* ─── Icon map for known FreeRTOS task names ─── */
 const TASK_META = {
   "ptp_rx":   { icon:"\u{1F4E5}", role:"L2TAP RX, hw timestamps, dispatch" },
-  "ptp_tx":   { icon:"\u{1F4E4}", role:"Sync / Announce / Delay_Resp" },
-  "gps":      { icon:"\u{1F6F0}\uFE0F", role:"NMEA parser \u00B7 UART1 @ 9600" },
+  "ptp_tx":   { icon:"\u{1F4E4}", role:"Sync / Announce" },
+  "dresp":    { icon:"\u{1F4EC}", role:"Delay_Resp worker" },
+  "gnss":      { icon:"\u{1F6F0}\uFE0F", role:"NMEA parser \u00B7 UART1 @ 9600" },
   "servo":    { icon:"\u2699\uFE0F", role:"PI servo, freq/step discipline" },
   "pps_task": { icon:"\u{1F551}", role:"1-PPS edge handler, PHC capture" },
   "pps_led":  { icon:"\u{1F4A1}", role:"PPS visual indicator (GPIO 3)" },
@@ -520,10 +586,10 @@ function render(d) {
     setText("v_freq", "\u2014");
   }
 
-  /* Hero — GPS */
-  setText("v_gps", d.gps_fix ? "FIX OK" : "NO FIX");
-  $("v_gps").style.color = d.gps_fix ? "var(--ok)" : "var(--err)";
-  setText("v_gps_sub", "PPS count: " + (d.pps_count != null ? d.pps_count.toLocaleString() : "\u2014"));
+  /* Hero — GNSS */
+  setText("v_gnss", d.gnss_fix ? "FIX OK" : "NO FIX");
+  $("v_gnss").style.color = d.gnss_fix ? "var(--ok)" : "var(--err)";
+  setText("v_gnss_sub", "PPS count: " + (d.pps_count != null ? d.pps_count.toLocaleString() : "\u2014"));
 
   /* Device */
   setText("v_chip", (d.chip || "ESP32-P4") + " rev " + (d.chip_rev || "v1.0"));
@@ -542,7 +608,9 @@ function render(d) {
   setText("v_heap_free", fmtKB(d.heap_free || 0));
   setText("v_heap_min",  fmtKB(d.heap_min  || 0));
   setText("v_heap_lfb",  fmtKB(d.heap_lfb  || 0));
-  setText("v_retent",    (d.retent_kb || 141) + " KiB");
+  const retentTotal = d.retent_total != null ? d.retent_total : ((d.retent_kb || 0) * 1024);
+  const retentFree  = d.retent_free  != null ? d.retent_free  : retentTotal;
+  setText("v_retent", fmtKB(retentFree) + " free / " + fmtKB(retentTotal));
   setText("v_ram",       (d.ram1_kb || 384) + " + " + (d.ram2_kb || 18) + " KiB");
   setText("v_rtcram",    (d.rtc_kb || 31) + " KiB");
   setText("v_tcm",       (d.tcm_kb || 7) + " KiB");
@@ -556,6 +624,8 @@ function render(d) {
   /* Network */
   const linkUp = !!d.link_up;
   $("v_link").innerHTML = linkUp ? '<span class="chip ok">UP</span>' : '<span class="chip err">DOWN</span>';
+  setText("v_hostname", d.hostname || "\u2014");
+  if (d.hostname) document.title = d.hostname + " \u2014 PTP Master";
   setText("v_ip", d.ip || "(no IP)");
   setText("v_ip_hint", d.ip_source ? d.ip_source : "DHCP/static");
   setText("v_mac", d.mac || "\u2014");
@@ -616,7 +686,7 @@ function render(d) {
   const stl = $("v_settled");
   setText("v_settled", d.settled ? "yes" : "no");
   stl.className = "value " + (d.settled ? "ok" : "warn");
-  setText("v_gpsage", d.gps_age_s != null ? (d.gps_age_s + " s ago") : "\u2014");
+  setText("v_gnssage", d.gnss_age_s != null ? (d.gnss_age_s + " s ago") : "\u2014");
   setText("v_ppsled", d.pps_led_active ? "blinking" : "idle");
 
   /* Tasks */
@@ -652,8 +722,108 @@ function render(d) {
   setText("lastRefresh", pad(now.getUTCHours()) + ":" + pad(now.getUTCMinutes()) + ":" + pad(now.getUTCSeconds()) + " UTC");
 }
 
+/* ─── Load / Soak monitor (opt-in; polls /api/health only when started) ─── */
+const HCAP = 180;
+const HJIT = [], HHEAP = [];
+let monTimer = null;
+
+function fmtBytes(b){ if (b==null) return "\u2014"; if (b>=1048576) return (b/1048576).toFixed(2)+" MB"; if (b>=1024) return (b/1024).toFixed(1)+" KB"; return b+" B"; }
+
+function drawSpark(id, arr, color){
+  const c = $(id); if (!c) return; const ctx = c.getContext("2d");
+  const W = c.width, H = c.height; ctx.clearRect(0,0,W,H);
+  if (arr.length < 2) return;
+  let mn = Math.min.apply(null, arr), mx = Math.max.apply(null, arr);
+  if (mx - mn < 1e-9) { mn -= 1; mx += 1; }
+  const n = arr.length, dx = W/(HCAP-1);
+  ctx.lineWidth = 1.5; ctx.strokeStyle = color; ctx.beginPath();
+  for (let i=0;i<n;i++){ const x=i*dx; const y=H-3-((arr[i]-mn)/(mx-mn))*(H-6); if(i===0)ctx.moveTo(x,y); else ctx.lineTo(x,y); }
+  ctx.stroke();
+  ctx.globalAlpha=0.12; ctx.lineTo((n-1)*dx,H); ctx.lineTo(0,H); ctx.closePath(); ctx.fillStyle=color; ctx.fill(); ctx.globalAlpha=1;
+}
+
+function renderHealth(d){
+  const sj = d.sync_jitter || {};
+  const p2p = (sj.p2p_us!=null) ? sj.p2p_us : null;
+  setText("h_jit", p2p!=null ? (p2p/1000).toFixed(2)+" ms" : "\u2014");
+  setText("h_jit_sub", "win " + (sj.window!=null?sj.window:0) + " \u00B7 mean " + (sj.mean_us!=null?(sj.mean_us/1000).toFixed(3)+" ms":"\u2014"));
+  const rx = d.rx_task || {};
+  setText("h_rxcpu", rx.cpu_pct!=null ? rx.cpu_pct.toFixed(1)+" %" : (d.runtime_stats?"0.0 %":"n/a"));
+  setText("h_rxcpu_sub", d.runtime_stats ? "ptp_rx share of total" : "enable run-time stats");
+  setText("h_heapmin", d.heap ? fmtBytes(d.heap.min) : "\u2014");
+  setText("h_heapmin_sub", d.heap ? "free now " + fmtBytes(d.heap.free) : "\u2014");
+  setText("h_rxstack", rx.stack_hwm!=null ? fmtBytes(rx.stack_hwm) : "\u2014");
+  setText("h_rxstack_sub", rx.stack_size!=null ? "of " + fmtBytes(rx.stack_size) : "headroom");
+
+  if (p2p!=null){ HJIT.push(p2p); if(HJIT.length>HCAP)HJIT.shift(); }
+  if (d.heap && d.heap.min!=null){ HHEAP.push(d.heap.min/1024); if(HHEAP.length>HCAP)HHEAP.shift(); }
+  drawSpark("sp_jit", HJIT, "#ffb86c"); drawSpark("sp_heap", HHEAP, "#50fa7b");
+  setText("sp_jit_v", p2p!=null ? p2p + " \u00B5s" : "\u2014");
+  setText("sp_heap_v", (d.heap&&d.heap.min!=null) ? (d.heap.min/1024).toFixed(0)+" KB" : "\u2014");
+
+  if (Array.isArray(d.tasks)){
+    const body = $("monTasksBody");
+    body.innerHTML = d.tasks.slice().sort((a,b)=>(b.cpu_pct||0)-(a.cpu_pct||0)).map(t => {
+      const meta = TASK_META[t.name] || { icon:"\u{1F539}" };
+      const cpu = (t.cpu_pct!=null) ? t.cpu_pct.toFixed(1)+" %" : "\u2014";
+      const cpuW = (t.cpu_pct!=null) ? Math.max(0,Math.min(100,t.cpu_pct)) : 0;
+      const hwm = (t.stack_hwm!=null) ? fmtBytes(t.stack_hwm) : "\u2014";
+      return "<tr>"
+        + '<td><span class="tname"><span class="icon">' + meta.icon + "</span>" + t.name + "</span></td>"
+        + '<td><span class="' + prioClass(t.prio) + '">' + (t.prio!=null?t.prio:"\u2014") + "</span></td>"
+        + '<td><span class="bar"><i style="width:' + cpuW + '%"></i></span>' + cpu + "</td>"
+        + "<td>" + hwm + "</td>"
+        + "</tr>";
+    }).join("");
+  }
+
+  const now = new Date(); const pad = (n)=>String(n).padStart(2,"0");
+  setText("monLast", pad(now.getUTCHours())+":"+pad(now.getUTCMinutes())+":"+pad(now.getUTCSeconds())+" UTC");
+  setText("monRt", d.runtime_stats ? "run-time stats: on" : "run-time stats: OFF (cpu n/a)");
+}
+
+async function healthPoll(){
+  try {
+    const r = await fetch("/api/health", { cache:"no-store" });
+    if (!r.ok) throw new Error("HTTP "+r.status);
+    renderHealth(await r.json());
+  } catch (err) {
+    setText("monRt", "poll failed: " + err.message);
+    console.warn("health poll failed:", err);
+  }
+}
+
+function setMonitoring(on){
+  const btn = $("monToggle"), txt = $("monToggleText"), badge = $("monBadge");
+  if (on){
+    $("monIdle").style.display = "none"; $("monBody").style.display = "block";
+    btn.classList.add("on"); txt.textContent = "Stop monitoring";
+    badge.textContent = "monitoring \u00B7 " + HEALTH_POLL_MS + " ms";
+    setText("monInt", HEALTH_POLL_MS);
+    healthPoll();
+    monTimer = setInterval(healthPoll, HEALTH_POLL_MS);
+  } else {
+    if (monTimer){ clearInterval(monTimer); monTimer = null; }
+    btn.classList.remove("on"); txt.textContent = "Start monitoring";
+    badge.textContent = "stopped \u00B7 polls /api/health";
+    poll();
+  }
+}
+
+$("monToggle").addEventListener("click", () => setMonitoring(monTimer === null));
+$("monIdleMs").textContent = HEALTH_POLL_MS;
+
 /* ─── Polling ─── */
 async function poll() {
+  /* Opt-in: while monitoring is active and the box is checked, skip the
+     /api/status request entirely so the page issues only /api/health. */
+  const cb = $("monPauseStatus");
+  if (monTimer !== null && cb && cb.checked) {
+    const pill = $("hdrStatus");
+    if (pill) pill.className = "status-pill warn";
+    setText("hdrStatusText", "STATUS POLL PAUSED");
+    return;
+  }
   try {
     const r = await fetch("/api/status", { cache: "no-store" });
     if (!r.ok) throw new Error("HTTP " + r.status);

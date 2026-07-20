@@ -9,10 +9,10 @@ CONFIG_ESP32P4_SELECTS_REV_LESS_V3=y
 CONFIG_ESP32P4_REV_MIN_100=y
 CONFIG_ESP_NETIF_L2_TAP=y
 CONFIG_ESP_CONSOLE_SECONDARY_NONE=y
-CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
 CONFIG_FREERTOS_USE_TRACE_FACILITY=y
 CONFIG_FREERTOS_GENERATE_RUN_TIME_STATS=y
 CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
+CONFIG_LWIP_MAX_HOSTNAME_LEN=32
 # Totally and completely remove even the calls to logging functions at compile time, something
 # that esp_log_level_set("*", ESP_LOG_NONE), since it leaves at least the evaluation cycle(s)
 # behind. Useful to squeeze the very last bit of performance from the chip. Needs a full clear and the
@@ -22,3 +22,38 @@ CONFIG_SPI_FLASH_SUPPORT_BOYA_CHIP=y
 # CONFIG_LOG_MAXIMUM_LEVEL_ERROR=y
 #CONFIG_LOG_DEFAULT_LEVEL_NONE=y
 #CONFIG_LOG_MAXIMUM_LEVEL_NONE=y
+
+# Additional optimizations for production shipping besides logging reduction/disabling
+# --- Optimization level ---
+#CONFIG_COMPILER_OPTIMIZATION_PERF=y
+
+# --- Logging: cuts hot-path ESP_LOGI/LOGD cost, keeps WARN/ERROR ---
+#CONFIG_LOG_DEFAULT_LEVEL_WARN=y
+#CONFIG_LOG_MAXIMUM_LEVEL_WARN=y
+
+# --- C++ features not being used (main.c is C) ---
+#CONFIG_COMPILER_CXX_EXCEPTIONS=n
+#CONFIG_COMPILER_CXX_RTTI=n
+
+# Possible performance optimizations but depends on more tests
+# --- Assertions ---
+#CONFIG_COMPILER_OPTIMIZATION_ASSERTIONS_SILENT=y   # (or DISABLE)
+
+# --- Core dump / panic behavior ---
+#CONFIG_ESP_COREDUMP_ENABLE=n
+#CONFIG_ESP_SYSTEM_PANIC_PRINT_HALT=y
+
+# --- Stack checking ---
+#CONFIG_COMPILER_STACK_CHECK_MODE_NONE=y
+#CONFIG_FREERTOS_WATCHPOINT_END_OF_STACK=n
+
+# If mentioned, understand why
+#CONFIG_ESP_INT_WDT_TIMEOUT_MS       # verify current value is a deliberate choice, not a debug-era default
+
+# Be carefull with the one below, a stack overflow with checking off often manifests as silent heap corruption
+# or a hard-to-diagnose crash somewhere else entirely, rather than a clean, attributable fault.
+#CONFIG_FREERTOS_CHECK_STACKOVERFLOW_NONE=y
+
+# The two cheaper alternatives to full NONE are:
+#CONFIG_FREERTOS_CHECK_STACKOVERFLOW_PTRVAL=y   # canary check, low overhead, good default
+#CONFIG_FREERTOS_CHECK_STACKOVERFLOW_CANARY=y   # even cheaper single-value check
