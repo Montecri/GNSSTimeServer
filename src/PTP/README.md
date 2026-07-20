@@ -24,8 +24,9 @@
 <p align="center"><img width="643" height="299" alt="image" src="https://github.com/user-attachments/assets/41e96565-0ac0-477e-aec7-db41561343a0" /></p>
 
 <br>
+
 🎖️ Featured by [Hackaday](https://hackaday.com/2026/07/08/this-diy-time-server-is-more-accurate-than-you-need/)
-<br>
+<br><br>
 
 Two homemade time servers, one obsession: turning a noisy one-pulse-per-second tick from the GPS satellites overhead into a clock the rest of your network can trust. They come from the same workbench and the same stubborn insistence on building from scratch, they differ only in **how precise you need to be**.
 
