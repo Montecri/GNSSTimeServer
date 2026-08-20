@@ -26,6 +26,8 @@
 <br>
 
 🎖️ Featured by [Hackaday](https://hackaday.com/2026/07/08/this-diy-time-server-is-more-accurate-than-you-need/)
+
+🎖️ Selected for [Maker Faire Curitiba 2026](https://www.makerfairecuritiba.com.br/)
 <br><br>
 
 Two homemade time servers, one obsession: turning a noisy one-pulse-per-second tick from the GPS satellites overhead into a clock the rest of your network can trust. They come from the same workbench and the same stubborn insistence on building from scratch, they differ only in **how precise you need to be**.
