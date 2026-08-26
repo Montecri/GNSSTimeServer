@@ -799,6 +799,19 @@ static int64_t g_gnss_sig_last_update_ms = 0;
 /* One GSV SNR accumulator per talker (see talker_index for the mapping). */
 static gsv_acc_t g_gsv_acc[GSV_TALKER_COUNT];
 
+/* Latest receiver-reported GSV total for each talker.
+ *
+ * If a fresh $GNGSV combined report exists, it takes precedence over the
+ * individual GP/GL/GA/GB reports so satellites are not counted twice.
+ */
+#define GSV_COUNT_FRESH_MS 2500
+
+static uint8_t g_gsv_view_by_talker[GSV_TALKER_COUNT] = {0};
+static int64_t g_gsv_view_seen_ms[GSV_TALKER_COUNT] = {0};
+
+/* Used to prevent an old GGA count remaining displayed if GGA stops. */
+static int64_t g_gga_last_update_ms = 0;
+
 /* PPS edge-to-edge jitter tracking. Captures the receiver's raw timing
  * noise BEFORE the servo processes it. pps_task pushes one sample per edge;
  * gnss_signal_task reads and zeroes the accumulators every 30 s.
@@ -1757,6 +1770,62 @@ static bool parse_rmc(const char *line)
     return true;
 }
 
+/* GGA contains the total number of satellites used by the complete
+ * multi-constellation navigation solution.
+ *
+ *   0  message ID
+ *   1  UTC
+ *   2  latitude
+ *   3  N/S
+ *   4  longitude
+ *   5  E/W
+ *   6  fix quality
+ *   7  total satellites used
+ */
+static bool parse_gga(const char *line)
+{
+    if (line == NULL || line[0] != '$' || strlen(line) < 10)
+        return false;
+
+    char buf[160];
+    strncpy(buf, line, sizeof(buf));
+    buf[sizeof(buf) - 1] = 0;
+
+    /* Checksum has already been verified by gnss_task(). */
+    char *star = strchr(buf, '*');
+    if (star)
+        *star = 0;
+
+    char *f[20];
+    int nf = nmea_split(buf, f, 20);
+
+    if (nf < 8)
+        return false;
+
+    int fix_quality = atoi(f[6]);
+    int used = atoi(f[7]);
+
+    if (used < 0)
+        used = 0;
+    if (used > 255)
+        used = 255;
+
+    /* Do not retain a stale count when GGA says no solution. Allystar may
+     * report fix quality 3 for a PPS/timing fix, so every non-zero quality
+     * is accepted here. */
+    if (fix_quality == 0)
+        used = 0;
+
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
+    portENTER_CRITICAL(&g_gnss_sig_lock);
+    g_gnss_sv_used = (uint8_t)used;
+    g_gga_last_update_ms = now_ms;
+    portEXIT_CRITICAL(&g_gnss_sig_lock);
+
+    return true;
+}
+
 /* Talker index mapping:
  *   0 = GP (GPS), 1 = GL (GLONASS), 2 = GA (Galileo),
  *   3 = GB/BD (BeiDou), 4 = GN (multi-constellation summary), 5 = other
@@ -1778,24 +1847,62 @@ static int talker_index(const char *talker /* 2 chars, e.g. "GP" */)
     return 5;
 }
 
-/* Roll up all talker accumulators into the global snapshot. Called when
- * we observe a "this is the last sentence of a group" GSV line — typically
- * the GN group ends last in a u-blox cycle, but we tolerate any order. */
+static uint8_t gsv_compute_total_visible(int64_t now_ms)
+{
+    /* Index 4 is GN: a combined multi-constellation report. If it is fresh,
+     * use it alone; adding GP/GL/GA/GB would double-count the satellites. */
+    if (g_gsv_view_seen_ms[4] != 0 &&
+        now_ms - g_gsv_view_seen_ms[4] <= GSV_COUNT_FRESH_MS)
+    {
+        return g_gsv_view_by_talker[4];
+    }
+
+    /* No fresh combined GN report: sum the latest fresh constellation-
+     * specific totals. The total is repeated in every sentence belonging
+     * to a GSV group, so each talker is stored once rather than added for
+     * every sentence. */
+    uint16_t total = 0;
+
+    for (int t = 0; t < GSV_TALKER_COUNT; t++)
+    {
+        if (t == 4)
+            continue; /* skip GN combined slot */
+
+        if (g_gsv_view_seen_ms[t] != 0 &&
+            now_ms - g_gsv_view_seen_ms[t] <= GSV_COUNT_FRESH_MS)
+        {
+            total += g_gsv_view_by_talker[t];
+        }
+    }
+
+    return (total > 255) ? 255 : (uint8_t)total;
+}
+
+/* Publish signal-strength statistics.
+ *
+ * Important: this function no longer derives "satellites in view" from
+ * non-zero SNR entries. A visible satellite can legitimately have an empty
+ * SNR field. The visible count is now obtained from the GSV header inside
+ * parse_gsv().
+ */
 static void gsv_publish_snapshot(void)
 {
     uint16_t sum = 0;
     uint8_t cnt = 0;
-    uint8_t mn = 255, mx = 0;
+    uint8_t mn = 255;
+    uint8_t mx = 0;
 
     for (int t = 0; t < GSV_TALKER_COUNT; t++)
     {
         for (int i = 0; i < GSV_MAX_SVS_PER_TALKER; i++)
         {
             uint8_t s = g_gsv_acc[t].snr[i];
+
             if (s > 0)
             {
                 sum += s;
                 cnt++;
+
                 if (s < mn)
                     mn = s;
                 if (s > mx)
@@ -1805,6 +1912,7 @@ static void gsv_publish_snapshot(void)
     }
 
     uint8_t avg = (cnt > 0) ? (uint8_t)(sum / cnt) : 0;
+
     if (cnt == 0)
     {
         mn = 0;
@@ -1815,92 +1923,116 @@ static void gsv_publish_snapshot(void)
     g_gnss_snr_avg = avg;
     g_gnss_snr_min = mn;
     g_gnss_snr_max = mx;
-    g_gnss_sv_in_view = cnt;
+
+    /* Do not assign g_gnss_sv_in_view here. An SNR count is not the same
+     * thing as the receiver-reported number of satellites in view. */
+
     g_gnss_sig_last_update_ms = esp_timer_get_time() / 1000;
     portEXIT_CRITICAL(&g_gnss_sig_lock);
 }
 
 static bool parse_gsv(const char *line)
 {
-    /* Format: $xxGSV,total,sentence,sv_in_view,prn,elev,azim,snr,...
-     *         field 0     1     2          3   4    5    6   7   then 4-per-SV
-     *
-     * We don't care about elev/azim. We harvest snr for each reported SV.
-     * Fields are extracted positionally (nmea_split) so an empty SNR — "in
-     * view but not tracked", extremely common — stays in its own slot
-     * instead of shifting every later SV's fields left, which is what the
-     * old strtok_r walk did. */
-    if (line[0] != '$' || strlen(line) < 8)
+    /* GSV:
+     *   field 0 = $xxGSV
+     *   field 1 = total number of sentences in this group
+     *   field 2 = current sentence number
+     *   field 3 = total satellites in view for this talker/group
+     *   fields 4 onward = PRN,elevation,azimuth,SNR groups
+     */
+    if (line == NULL || line[0] != '$' || strlen(line) < 8)
         return false;
 
     char talker[3] = {line[1], line[2], 0};
     int t = talker_index(talker);
 
-    char buf[128];
+    if (t < 0 || t >= GSV_TALKER_COUNT)
+        return false;
+
+    char buf[160];
     strncpy(buf, line, sizeof(buf));
     buf[sizeof(buf) - 1] = 0;
 
-    /* strip checksum after '*' */
     char *star = strchr(buf, '*');
     if (star)
         *star = 0;
 
-    /* Header (4 fields) + up to 4 SVs × 4 fields = 20; NMEA 4.10 receivers
-     * append a signal-ID field — 24 gives headroom. */
     char *f[24];
     int nf = nmea_split(buf, f, 24);
+
     if (nf < 4)
         return false;
 
-    int total = atoi(f[1]);
-    int sentence = atoi(f[2]);
-    int sv_in_view = atoi(f[3]);
+    int total_sentences = atoi(f[1]);
+    int sentence_number = atoi(f[2]);
+    int satellites_in_view = atoi(f[3]);
 
-    if (sentence == 1)
+    if (total_sentences <= 0 ||
+        sentence_number <= 0 ||
+        sentence_number > total_sentences)
     {
-        memset(&g_gsv_acc[t], 0, sizeof(g_gsv_acc[t]));
+        return false;
     }
-    g_gsv_acc[t].total_expected = total;
-    g_gsv_acc[t].count = sv_in_view;
 
-    /* Per-SV groups: prn=f[4+4k], elev, azim, snr=f[7+4k]. */
+    if (satellites_in_view < 0)
+        satellites_in_view = 0;
+    if (satellites_in_view > 255)
+        satellites_in_view = 255;
+
+    /* Sentence 1 begins a new GSV group for this talker. */
+    if (sentence_number == 1)
+        memset(&g_gsv_acc[t], 0, sizeof(g_gsv_acc[t]));
+
+    g_gsv_acc[t].total_expected = total_sentences;
+    g_gsv_acc[t].count = satellites_in_view;
+
+    /* Collect SNR values for the existing min/avg/max diagnostics.
+     * Empty SNR fields remain zero and are excluded from SNR statistics,
+     * but they do not reduce the visible count taken from field 3. */
     for (int k = 0; 7 + 4 * k < nf; k++)
     {
-        const char *tok = f[7 + 4 * k]; /* SNR slot of the k-th SV group */
+        const char *snr_field = f[7 + 4 * k];
 
-        /* SNR field semantics vary by receiver:
-         *   - Empty field: SV is in view but not currently tracked
-         *   - Real signal: typically 20-50 dB-Hz, max ~55 at zenith
-         *   - Some receivers report noise floor (5-15) for untracked
-         *     SVs instead of leaving the field empty
-         *   - Bogus values (60+, 100+) occur with non-standard
-         *     extensions, partial parses, or buggy NMEA emitters
-         *
-         * Accept only physically plausible values. Cutoff at 10 is a
-         * pragmatic compromise: it filters clearly-untracked (<10)
-         * and clearly-bogus (>55) readings, but does NOT distinguish
-         * a genuinely weak track at ~10-15 dB-Hz from a receiver's
-         * noise-floor stand-in for "not tracked" at the same value.
-         * Values in that overlap band get counted as real tracking;
-         * this inflates the "in view" count slightly under weak
-         * signal but does not affect the servo (which runs off PPS,
-         * not SNR). Outside this range, treat as "not tracked" (SNR=0). */
-        int snr_int = (tok[0] == 0) ? 0 : atoi(tok);
-        uint8_t snr = (snr_int >= 10 && snr_int <= 55)
-                          ? (uint8_t)snr_int
+        int snr_value = (snr_field[0] == 0)
+                            ? 0
+                            : atoi(snr_field);
+
+        uint8_t snr = (snr_value >= 10 && snr_value <= 55)
+                          ? (uint8_t)snr_value
                           : 0;
-        int sv_global = (sentence - 1) * 4 + k;
-        if (sv_global >= 0 && sv_global < GSV_MAX_SVS_PER_TALKER)
-        {
-            g_gsv_acc[t].snr[sv_global] = snr;
-        }
+
+        int slot = (sentence_number - 1) * 4 + k;
+
+        if (slot >= 0 && slot < GSV_MAX_SVS_PER_TALKER)
+            g_gsv_acc[t].snr[slot] = snr;
     }
 
-    /* When the LAST sentence of any group arrives, publish a snapshot. */
-    if (sentence >= total && total > 0)
+    int64_t now_ms = esp_timer_get_time() / 1000;
+
+    /* Store this talker's reported total. Do not add it once per GSV
+     * sentence because field 3 is repeated throughout the group. */
+    g_gsv_view_by_talker[t] = (uint8_t)satellites_in_view;
+    g_gsv_view_seen_ms[t] = now_ms;
+
+    uint8_t total_visible = gsv_compute_total_visible(now_ms);
+
+    portENTER_CRITICAL(&g_gnss_sig_lock);
+    g_gnss_sv_in_view = total_visible;
+    g_gnss_sig_last_update_ms = now_ms;
+
+    /* If GGA has disappeared, do not indefinitely display its last known
+     * satellites-used count while GSV continues updating. */
+    if (g_gga_last_update_ms == 0 ||
+        now_ms - g_gga_last_update_ms > GSV_COUNT_FRESH_MS)
     {
-        gsv_publish_snapshot();
+        g_gnss_sv_used = 0;
     }
+
+    portEXIT_CRITICAL(&g_gnss_sig_lock);
+
+    /* Publish SNR statistics after receiving the last sentence in the group. */
+    if (sentence_number == total_sentences)
+        gsv_publish_snapshot();
 
     return true;
 }
@@ -2025,13 +2157,9 @@ static bool parse_gsa(const char *line)
     g_sv_gsa_seen++;
     portEXIT_CRITICAL(&g_sv_churn_lock);
 
-    portENTER_CRITICAL(&g_gnss_sig_lock);
-    /* Multiple GSA sentences arrive in a multi-GNSS receiver — one per
-     * constellation. Keep "last-seen" as the figure to display so the
-     * OLED matches what GNSS_SIG prints. */
-    g_gnss_sv_used = used;
-    portEXIT_CRITICAL(&g_gnss_sig_lock);
-
+    /* GSA remains responsible for PRN-set/churn diagnostics. Do not update
+    * g_gnss_sv_used here: each GSA may describe only one constellation.
+    * GGA provides the total used by the complete solution. */
     return true;
 }
 
@@ -3091,6 +3219,10 @@ static void gnss_task(void *arg)
                     else if (strstr(line, "RMC"))
                     {
                         parse_rmc(line);
+                    }
+                    else if (strstr(line, "GGA"))
+                    {
+                        parse_gga(line);
                     }
                     else if (strstr(line, "GSV"))
                     {
