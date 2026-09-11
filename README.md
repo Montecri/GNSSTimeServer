@@ -67,7 +67,7 @@
 
 🎖️ Selected for and presented at [Maker Faire Rome 2023](https://makerfairerome.eu/en/exhibitors/?edition=2023&exhibit=2320015)
 
-🎖️ Selected for [Maker Faire Curitiba 2026](https://www.makerfairecuritiba.com.br/)
+🎖️ Selected for and presented at [Maker Faire Curitiba 2026](https://www.makerfairecuritiba.com.br/)
 
 <br>
 
