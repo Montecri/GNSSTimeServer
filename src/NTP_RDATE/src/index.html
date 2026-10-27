@@ -15,10 +15,9 @@
 
                 alt="GNSSTimeServer"></h1>
           </td>
-          <td style="vertical-align: middle; background-color: white;">
-            <h2><span style="font-family: Calibri;">GNSS Time Server v<div id="version" style="display:inline-block;"></div><br>
-              </span></h2>
-          </td>
+          <td style="vertical-align: middle; background-color: white;"><span style="font-family: Calibri;">
+			<h2>GNSS Time Server v2.0</h2><br>
+			<b>Build</b>: <u><div id="version" style="display:inline-block;"></div></u></span></td>
         </tr>
         <tr>
           <td style="vertical-align: middle; background-color: white;">________
@@ -30,11 +29,11 @@
 
               alt="MCU"><br>
           </td>
-          <td style="vertical-align: middle; background-color: white;"><span style="font-family: Calibri;"><b>Uptime</b>: <div id="uptime" style="display:inline-block;"></div>
-              <br>
+          <td style="vertical-align: middle; background-color: white;"><span style="font-family: Calibri;">
+			  <b>Uptime</b>: <div id="uptime" style="display:inline-block;"></div><br>
               <b>Free Heap</b>: <div id="freeheap" style="display:inline-block;"></div><br>
               <b>Minimum Heap</b>: <div id="minimumheap" style="display:inline-block;"></div><br>
-              <b>IDF Version</b>: <div id="idfversion" style="display:inline-block;"></div><br>
+              <b>SDK Version</b>: <div id="idfversion" style="display:inline-block;"></div><br>
               <b>Internal Temperature</b>: <div id="internaltemp" style="display:inline-block;"></div></span></td>
         </tr>
         <tr>
@@ -68,7 +67,7 @@
               <b>Latitude</b>: <div id="lat" style="display:inline-block;"></div><br>
               <b>Longitude</b>: <div id="lon" style="display:inline-block;"></div><br>
               <b>Satellites</b>: <div id="sats" style="display:inline-block;"></div><br>
-            </span><span style="font-family: Calibri;"><b>Precision</b>: <div id="hdop" style="width:50%; display:inline-block;"></div></span></td>
+            </span><span style="font-family: Calibri;"><b>HDOP</b>: <div id="hdop" style="width:50%; display:inline-block;"></div><br><b>PPS capture jitter</b>: <div id="ppsjitter" style="display:inline-block;"></div><br><b>PPS samples</b>: <div id="ppssamples" style="display:inline-block;"></div><br><b>Local osc. offset</b>: <div id="ppsppm" style="display:inline-block;"></div></span></td>
         </tr>
         <tr>
           <td style="vertical-align: middle; background-color: white;">________</td>
@@ -96,7 +95,7 @@
           </td>
 
           <td style="vertical-align: middle; background-color: white;"><span style="font-family: Calibri;">
-			<form action="updatewifi">Syslog server: <input type="text" id="syslog_server" name="syslog_server" value=""><br/>SSID: <input type="text" id="wifi_ssid" name="wifi_ssid" value=""><br/>Password: <input type="password" name="wifi_psk"><br/><input type="submit"></form>		  
+			<form action="updatewifi" method="post"><input type="hidden" id="csrf_token" name="csrf_token" value="">Syslog server: <input type="text" id="syslog_server" name="syslog_server" value="" maxlength="64"><br/>SSID: <input type="text" id="wifi_ssid" name="wifi_ssid" value="" maxlength="32"><br/>WiFi Password: <input type="password" name="wifi_psk" minlength="8" maxlength="64" title="8-63 characters, or exactly 64 hexadecimal digits for a raw WPA PSK. Leave empty to keep the stored password."><br/>WiFi Password when AP: <input type="password" name="wifi_ap_psk" minlength="8" maxlength="63" title="8-63 characters. Leave empty to keep the stored password."><br/>Admin Password: <input type="password" name="admin_psk" minlength="8" maxlength="63" title="8-63 characters. Leave empty to keep the stored password."><br/><label><input type="checkbox" name="wifi_open" value="1"> Open network (clear the stored WiFi password)</label><br/><input type="submit"></form>		  
             </span></td>
 			</tr>
         <tr>
@@ -112,32 +111,45 @@
 <script type="text/javascript">
 var firstRun = true;
 
+// A metric this board cannot measure - anything the firmware reports as "N/A", and any
+// unit-bearing field that is not a number - is shown as unavailable rather than dressed up as a
+// reading. The ESP8266 build has no IDF version, minimum-heap watermark or internal temperature.
+function setMetric(id, value, unit) {
+	var unavailable = value === null || value === undefined || value === '' ||
+		isNaN(parseFloat(value));
+	document.getElementById(id).textContent = unavailable ? 'N/A' : value + unit;
+}
+
 function updateFromJSON() {
   var xmlhttp = new XMLHttpRequest();
   xmlhttp.onreadystatechange = function () {
       if (xmlhttp.readyState == 4 && xmlhttp.status == 200) {
         myObj = JSON.parse(this.responseText);
-        document.getElementById("version").innerHTML = myObj.version;
-		document.getElementById("uptime").innerHTML = myObj.uptime;
-		document.getElementById("freeheap").innerHTML = myObj.freeheap + ' KB';
-		document.getElementById("ip").innerHTML = myObj.ip;
-		document.getElementById("network").innerHTML = myObj.network;
-		document.getElementById("type").innerHTML = myObj.type;
-		document.getElementById("signal").innerHTML = myObj.signal;
-		document.getElementById("timestamp").innerHTML = myObj.timestamp;
-		document.getElementById("lat").innerHTML = myObj.lat;
-		document.getElementById("lon").innerHTML = myObj.lon;
-		document.getElementById("sats").innerHTML = myObj.sats;
-		document.getElementById("hdop").innerHTML = myObj.hdop;
-		document.getElementById("minimumheap").innerHTML = myObj.minimumheap + ' KB';
-		document.getElementById("idfversion").innerHTML = myObj.idfversion;
-		document.getElementById("internaltemp").innerHTML = myObj.internaltemp + '  &deg;C';
-		document.getElementById("macaddress").innerHTML = myObj.macaddress;
-		document.getElementById("locked").innerHTML = myObj.locked;
-		document.getElementById("validdatetime").innerHTML = myObj.validdatetime;
-		document.getElementById("rtctemperature").innerHTML = myObj.rtctemperature + '  &deg;C';
-		document.getElementById("rtcrunning").innerHTML = myObj.rtcrunning;
-		document.getElementById("agingoffset").innerHTML = myObj.agingoffset;
+        document.getElementById("version").textContent = myObj.version;
+		document.getElementById("uptime").textContent = myObj.uptime;
+		setMetric("freeheap", myObj.freeheap, ' KB');
+		document.getElementById("ip").textContent = myObj.ip;
+		document.getElementById("network").textContent = myObj.network;
+		document.getElementById("type").textContent = myObj.type;
+		document.getElementById("signal").textContent = myObj.signal;
+		document.getElementById("timestamp").textContent = myObj.timestamp;
+		document.getElementById("lat").textContent = myObj.lat;
+		document.getElementById("lon").textContent = myObj.lon;
+		document.getElementById("sats").textContent = myObj.sats;
+		document.getElementById("hdop").textContent = myObj.hdop;
+		document.getElementById("ppsjitter").textContent = myObj.ppsjitter;
+		document.getElementById("ppssamples").textContent = myObj.ppssamples;
+		setMetric("ppsppm", myObj.ppsppm, ' ppm');
+		setMetric("minimumheap", myObj.minimumheap, ' KB');
+		document.getElementById("idfversion").textContent = myObj.idfversion;
+		setMetric("internaltemp", myObj.internaltemp, '  \u00B0C');
+		document.getElementById("macaddress").textContent = myObj.macaddress;
+		document.getElementById("locked").textContent = myObj.locked;
+		document.getElementById("validdatetime").textContent = myObj.validdatetime;
+		setMetric("rtctemperature", myObj.rtctemperature, '  \u00B0C');
+		document.getElementById("rtcrunning").textContent = myObj.rtcrunning;
+		document.getElementById("agingoffset").textContent = myObj.agingoffset;
+		document.getElementById("csrf_token").value = myObj.csrf;
 		if (firstRun) {
 			firstRun = false;
 			document.getElementById("syslog_server").value = myObj.syslog;
