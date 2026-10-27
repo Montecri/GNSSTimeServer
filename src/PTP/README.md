@@ -171,6 +171,13 @@ This is the maker-friendly heart both devices share: you can read their health a
 > [!NOTE]
 > On the NTP/RDATE build, some functionalities are ESP32-only, due either to ESP8266 limitations or features not yet backported.
 
+## 🔌 Wiring
+### 🧠 Guition JC-ESP32P4-M3-DEV
+
+<p align="center">
+  <img width="1136" height="704" alt="ptp_bb-menor" src="https://github.com/user-attachments/assets/c23ff6d0-74fe-44f9-8095-33e834cbc4ec" alt="PTP Grandmaster wiring diagram" />
+</p>
+
 ---
 
 ## 🛠️ Building each one
