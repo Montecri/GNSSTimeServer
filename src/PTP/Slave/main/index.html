@@ -193,7 +193,7 @@
       <div class="mark">P4</div>
       <div>
         <h1>PTP Slave &mdash; ESP32-P4 Ordinary Clock</h1>
-        <div class="sub">IEEE 1588-2008 &middot; L2/Ethernet Transport &middot; Domain 0
+        <div class="sub">IEEE 1588-2008 &middot; L2/Ethernet Transport &middot; <span id="hdr_domain">Domain 0</span>
           &middot; <span class="fw-ver" id="hdr_fw">fw &mdash;</span></div>
       </div>
     </div>
@@ -278,16 +278,16 @@
           <span class="label">Largest free block</span>
           <span class="value" id="v_heap_lfb">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F3DB;&#xFE0F;</span>
-          <span class="label">RETENT_RAM<span class="hint">@ 0x4FF178D0</span></span>
+          <span class="label">Retention RAM<span class="hint">MALLOC_CAP_RETENTION &middot; free / total</span></span>
           <span class="value dim" id="v_retent">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4D0;</span>
-          <span class="label">RAM regions</span>
+          <span class="label">Internal heap total<span class="hint">heap-managed &middot; MALLOC_CAP_INTERNAL</span></span>
           <span class="value dim" id="v_ram">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F50B;</span>
-          <span class="label">RTC RAM</span>
+          <span class="label">RTC heap</span>
           <span class="value dim" id="v_rtcram">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4BD;</span>
-          <span class="label">TCM</span>
+          <span class="label">TCM heap</span>
           <span class="value dim" id="v_tcm">&mdash;</span></div>
         <div class="row"><span class="icon">&#x267B;&#xFE0F;</span>
           <span class="label">Leak delta<span class="hint">since baseline</span></span>
@@ -324,7 +324,7 @@
           <span class="label">Promiscuous</span>
           <span class="value dim" id="v_promisc">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F6E1;&#xFE0F;</span>
-          <span class="label">Watchdog<span class="hint">heap pressure recovery</span></span>
+          <span class="label">Watchdog<span class="hint" id="v_wdt_hint">PHC freeze &middot; heap pressure recovery</span></span>
           <span class="value ok" id="v_wdt">&mdash;</span></div>
       </div>
     </div>
@@ -333,17 +333,14 @@
     <div class="card col-6">
       <div class="card-header"><h2>PTP &middot; Synchronization</h2><span class="badge">ordinary clock &middot; slave only</span></div>
       <div class="rows">
-        <div class="row"><span class="icon">&#x1F465;</span>
-          <span class="label">Role<span class="hint">this device</span></span>
-          <span class="value accent" id="v_role">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F194;</span>
           <span class="label">Our clock ID</span>
           <span class="value dim" id="v_clockid">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F451;</span>
-          <span class="label">GM MAC<span class="hint">source of selected Announces</span></span>
+          <span class="label">Sync source<span class="hint" id="v_gm_mac_hint">clockIdentity of the last Sync sender</span></span>
           <span class="value" id="v_gm_mac">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F194;</span>
-          <span class="label">GM clock ID</span>
+          <span class="label">GM clock ID<span class="hint">from Announce</span></span>
           <span class="value dim" id="v_gm_clockid">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F3F7;&#xFE0F;</span>
           <span class="label">GM clockClass<span class="hint">7 = holdover &middot; 6 = locked to PRTC</span></span>
@@ -360,12 +357,18 @@
         <div class="row"><span class="icon">&#x1F6F0;&#xFE0F;</span>
           <span class="label">GM time source</span>
           <span class="value dim" id="v_gm_src">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1FA9C;</span>
+          <span class="label">GM steps removed<span class="hint">BMCA hop count to actual GM</span></span>
+          <span class="value dim" id="v_gm_steps">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x2705;</span>
+          <span class="label">GM flags<span class="hint">TimePropertiesDS</span></span>
+          <span class="value" id="v_gm_flags">&mdash;</span></div>
       </div>
     </div>
 
     <!-- SERVO -->
     <div class="card col-6">
-      <div class="card-header"><h2>Servo &middot; Discipline</h2><span class="badge">freq + step &middot; linreg window 16</span></div>
+      <div class="card-header"><h2>Servo &middot; Discipline</h2><span class="badge" id="b_servo">freq + step &middot; linreg window 16</span></div>
       <div class="rows">
         <div class="row"><span class="icon">&#x1F7E2;</span>
           <span class="label">Servo state</span>
@@ -389,14 +392,17 @@
           <span class="label">TC correction m&rarr;s &middot; s&rarr;m<span class="hint">switch residence-time means; 0 on direct cable</span></span>
           <span class="value dim" id="v_corr">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4CA;</span>
-          <span class="label">Quality<span class="hint">% of window within &plusmn;100 ns</span></span>
+          <span class="label">Quality<span class="hint" id="v_qual_hint">% of window within &plusmn;100 ns</span></span>
           <span class="value ok" id="v_qual">&mdash;</span></div>
-        <div class="row"><span class="icon">&#x1F50D;</span>
-          <span class="label">PHC residual<span class="hint">long-window offset mean</span></span>
-          <span class="value dim" id="v_phc">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F198;</span>
           <span class="label">Locked for &middot; last Sync</span>
           <span class="value" id="v_lock_age">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x274C;</span>
+          <span class="label">Servo rejects<span class="hint">total &middot; live streak</span></span>
+          <span class="value dim" id="v_rejects">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F4E4;</span>
+          <span class="label">Delay_Req drops<span class="hint">queue full on send</span></span>
+          <span class="value dim" id="v_dreq_drops">&mdash;</span></div>
       </div>
     </div>
 
@@ -440,10 +446,10 @@
               <span class="label">Follow_Up latency<span class="hint">Sync RX &rarr; FU RX</span></span>
               <span class="value" id="v_fu_lat">&mdash;</span></div>
             <div class="row"><span class="icon">&#x26A0;&#xFE0F;</span>
-              <span class="label">Sync seq gaps</span>
+              <span class="label">Sync seq gaps<span class="hint">re-baselines on sender change</span></span>
               <span class="value" id="v_sync_gap">&mdash;</span></div>
             <div class="row"><span class="icon">&#x26A0;&#xFE0F;</span>
-              <span class="label">Announce seq gaps</span>
+              <span class="label">Announce seq gaps<span class="hint">re-baselines on sender change</span></span>
               <span class="value" id="v_ann_gap">&mdash;</span></div>
             <div class="row"><span class="icon">&#x1F4A5;</span>
               <span class="label">Post-lock spikes<span class="hint">|offset| &gt; 1&micro;s after lock</span></span>
@@ -468,9 +474,6 @@
             <div class="row"><span class="icon">&#x1F39A;&#xFE0F;</span>
               <span class="label">GM class transitions<span class="hint">e.g. 6 &rarr; 7 (holdover)</span></span>
               <span class="value" id="v_class_chg">&mdash;</span></div>
-            <div class="row"><span class="icon">&#x1F50A;</span>
-              <span class="label">LED heartbeat<span class="hint">Sync RX pulse count</span></span>
-              <span class="value dim" id="v_pulse_seq">&mdash;</span></div>
           </div>
         </div>
 
@@ -515,15 +518,16 @@ const TASK_META = {
   "ptp_rx":         { icon:"\u{1F4E5}", role:"L2TAP RX, hw timestamps, slave SM" },
   "delay_req":      { icon:"\u{1F4E4}", role:"Delay_Req emitter (queued)" },
   "gm_diag":        { icon:"\u{1F50D}", role:"GM quality diagnostics report" },
-  "slave_led_watch":{ icon:"\u{1F441}\uFE0F", role:"LED state vs Sync arrival" },
+  "led_watch":      { icon:"\u{1F441}\uFE0F", role:"LED state vs Sync arrival" },
   "pps_led":        { icon:"\u{1F4A1}", role:"Sync-RX heartbeat indicator" },
   "led":            { icon:"\u{1F506}", role:"Status LED state machine" },
-  "display":        { icon:"\u{1F4FA}", role:"SH1106 OLED \u00B7 3 screens" },
-  "btn":            { icon:"\u{1F518}", role:"Display button \u00B7 GPIO 1" },
-  "dhcp_fb":        { icon:"\u{1F310}", role:"DHCP fallback \u00B7 15 s timeout" },
-  "heap_mon":       { icon:"\u{1F4CA}", role:"Heap watchdog \u00B7 60 s interval" },
+  "display":        { icon:"\u{1F4FA}", role:"SH1106 OLED \u00B7 screens" },
+  "btn":            { icon:"\u{1F518}", role:"Display button" },
+  "dhcp_fb":        { icon:"\u{1F310}", role:"DHCP fallback" },
+  "heap_mon":       { icon:"\u{1F4CA}", role:"Heap watchdog" },
   "wdt":            { icon:"\u{1F415}", role:"Watchdog \u00B7 EMAC restart logic" },
-  "main":           { icon:"\u{1F3E1}", role:"Init & supervision (idle)" }
+  "main":           { icon:"\u{1F3E1}", role:"Init & supervision (idle)" },
+  "httpd":          { icon:"\u{1F310}", role:"HTTP server \u00B7 status + OTA" }
 };
 
 /* ─── Helpers ─── */
@@ -585,8 +589,29 @@ function counterClass(n, warn_at, err_at) {
   return "value info";
 }
 
+/* config never changes at runtime — apply these labels once, on the
+ * first successful /api/status response. */
+let configApplied = false;
+
+function applyConfigLabels(cfg) {
+  if (configApplied || !cfg) return;
+  configApplied = true;
+
+  setText("hdr_domain", "Domain " + cfg.ptp.domain);
+  setText("b_servo", "freq + step · linreg window " + cfg.servo.linreg_window);
+  setText("v_qual_hint", "±" + cfg.servo.quality_tight_ns + " / ±" + cfg.servo.quality_loose_ns + " ns");
+
+  const patch = (name, role) => { if (TASK_META[name]) TASK_META[name].role = role; };
+  patch("display", "SH1106 OLED · " + cfg.hw.display_screens + " screens");
+  patch("btn", "Display button · GPIO " + cfg.hw.button_gpio);
+  patch("dhcp_fb", "DHCP fallback · " + (cfg.net.dhcp_fallback_timeout_ms/1000) + " s timeout");
+  patch("heap_mon", "Heap watchdog · " + (cfg.mon.heap_mon_interval_ms/1000) + " s interval");
+}
+
 /* ─── Main render ─── */
 function render(d) {
+  applyConfigLabels(d.config);
+
   /* Header status pill */
   const pill = $("hdrStatus");
   const stateUp = (d.servo_state || "").toUpperCase();
@@ -603,7 +628,7 @@ function render(d) {
   else if (stateUp === "FAULT") mState.classList.add("fault");
   else if (stateUp === "NO_LINK" || stateUp === "NO LINK") mState.classList.add("no-link");
   setText("v_state", stateUp || "\u2014");
-  setText("v_state_sub", d.locked_for ? ("held " + d.locked_for) : "awaiting first Sync");
+  setText("v_state_sub", d.locked_for_s > 0 ? ("held " + formatUptime(d.locked_for_s)) : "awaiting first Sync");
 
   /* Hero — Offset to GM */
   if (typeof d.offset_ns === "number" && (stateUp === "LOCKED" || stateUp === "HOLDOVER")) {
@@ -631,14 +656,10 @@ function render(d) {
   }
 
   /* Hero — Grandmaster */
-  if (d.gm_mac && d.gm_mac !== "00:00:00:00:00:00") {
-    /* Show short form: last 4 bytes */
-    const parts = d.gm_mac.split(":");
-    if (parts.length === 6) {
-      setText("v_gm", "..\u200B" + parts.slice(2).join(":"));
-    } else {
-      setText("v_gm", d.gm_mac);
-    }
+  if (d.sync_src_id) {
+    /* Show short form: last two groups of the clockIdentity */
+    const parts = d.sync_src_id.split(" ");
+    setText("v_gm", "..\u200B" + parts.slice(-2).join(" "));
     $("v_gm").style.color = "var(--text)";
   } else {
     setText("v_gm", "NO GM");
@@ -653,29 +674,37 @@ function render(d) {
   /* Device */
   setText("v_chip", (d.chip || "ESP32-P4") + " rev " + (d.chip_rev || "v1.0"));
   setText("b_dev", (d.chip || "ESP32-P4") + " \u00B7 rev " + (d.chip_rev || "v1.0"));
-  setText("v_cpufreq", (d.cpu_mhz || 0) + " MHz");
+  setText("v_cpufreq", typeof d.cpu_mhz === "number" ? (d.cpu_mhz + " MHz") : "—");
   setText("v_proj", d.project || "\u2014");
   setText("v_appver", "app version " + (d.app_version || "\u2014"));
   setText("hdr_fw", "fw " + (d.app_version || "\u2014"));
   setText("v_idf", d.idf_version || "\u2014");
   setText("v_compile", d.compile_time || "\u2014");
   setText("v_sha", (d.elf_sha || "").substring(0,9) + "\u2026");
-  setText("v_flash", (d.flash_mb || 16) + " MB \u00B7 " + (d.flash_mode || "DIO") + " \u00B7 " + (d.flash_mhz || 80) + " MHz");
+  setText("v_flash", typeof d.flash_mb === "number"
+    ? (d.flash_mb + " MB \u00B7 " + (d.flash_mode || "\u2014") + " \u00B7 " + (d.flash_mhz != null ? d.flash_mhz : "\u2014") + " MHz")
+    : "\u2014");
   setText("v_uptime", formatUptime(d.uptime_s || 0));
 
   /* Memory */
   setText("v_heap_free", fmtKB(d.heap_free || 0));
   setText("v_heap_min",  fmtKB(d.heap_min  || 0));
   setText("v_heap_lfb",  fmtKB(d.heap_lfb  || 0));
-  setText("v_retent",    (d.retent_kb || 141) + " KiB");
-  setText("v_ram",       (d.ram1_kb || 384) + " + " + (d.ram2_kb || 18) + " KiB");
-  setText("v_rtcram",    (d.rtc_kb || 31) + " KiB");
-  setText("v_tcm",       (d.tcm_kb || 7) + " KiB");
+  const retentFree  = d.retent_free  != null ? d.retent_free  : 0;
+  const retentTotal = d.retent_total != null ? d.retent_total : 0;
+  setText("v_retent", fmtKB(retentFree) + " free / " + fmtKB(retentTotal));
+  setText("v_ram",    d.heap_internal_total != null ? fmtKB(d.heap_internal_total) : "—");
+  setText("v_rtcram", d.rtc_heap_total != null ? fmtKB(d.rtc_heap_total) : "not in heap");
+  setText("v_tcm",    d.tcm_heap_total != null ? fmtKB(d.tcm_heap_total) : "not in heap");
   if (typeof d.heap_leak === "number") {
     const lv = $("v_leak");
     const sign = d.heap_leak >= 0 ? "+" : "";
     setText("v_leak", sign + d.heap_leak + " B");
     lv.className = "value " + (Math.abs(d.heap_leak) > 1024 ? "warn" : "ok");
+  } else {
+    const lv = $("v_leak");
+    setText("v_leak", "measuring…");
+    lv.className = "value dim";
   }
 
   /* Network */
@@ -684,7 +713,7 @@ function render(d) {
   setText("v_hostname", d.hostname || "\u2014");
   if (d.hostname) document.title = d.hostname + " \u2014 PTP Slave";
   setText("v_ip", d.ip || "(no IP)");
-  setText("v_ip_hint", d.ip_source ? d.ip_source : "DHCP/static");
+  setText("v_ip_hint", d.ip_source ? d.ip_source : "\u2014");
   setText("v_mac", d.mac || "\u2014");
   $("v_l2tap").innerHTML = d.l2tap_ready ? '<span class="chip ok">READY</span>' : '<span class="chip err">NOT READY</span>';
   setText("v_mcast", "01:1B:19:00:00:00");
@@ -692,13 +721,35 @@ function render(d) {
   setText("v_emac", d.emac_restarts != null ? d.emac_restarts : "\u2014");
   emacV.className = "value " + ((d.emac_restarts || 0) === 0 ? "ok" : (d.emac_restarts > 5 ? "err" : "warn"));
   setText("v_promisc", d.promiscuous ? "enabled" : "disabled");
-  setText("v_wdt", d.wdt_healthy ? "healthy" : "alerting");
-  $("v_wdt").className = "value " + (d.wdt_healthy ? "ok" : "err");
+  const wdtV = $("v_wdt");
+  if (d.wdt) {
+    const wstateText = { ok:"ok", arming:"arming", phc_frozen:"PHC frozen", heap_critical:"heap critical", restart_limit:"restart limit" };
+    setText("v_wdt", wstateText[d.wdt.state] || d.wdt.state || "\u2014");
+    wdtV.className = "value " + ((d.wdt.state === "ok" || d.wdt.state === "arming") ? "ok" : "err");
+    let hint = (d.wdt.alerts != null ? d.wdt.alerts : 0) + " alerts";
+    if (d.wdt.last_alert_uptime_s != null && typeof d.uptime_s === "number")
+      hint += " \u00b7 last alert " + formatUptime(Math.max(0, d.uptime_s - d.wdt.last_alert_uptime_s)) + " ago";
+    setText("v_wdt_hint", hint);
+  } else {
+    setText("v_wdt", "\u2014");
+    wdtV.className = "value dim";
+  }
 
   /* PTP / Synchronization */
-  setText("v_role", d.role || "\u2014");
   setText("v_clockid", d.clock_id || "\u2014");
-  setText("v_gm_mac", d.gm_mac || "\u2014");
+  setText("v_gm_mac", d.sync_src_id || "\u2014");
+  {
+    const changes = d.sync_src_changes != null ? d.sync_src_changes : 0;
+    let hint = changes + " changes";
+    const gmv = $("v_gm_mac");
+    if (d.sync_src_id && d.gm_clock_id && d.sync_src_id !== d.gm_clock_id) {
+      gmv.className = "value warn";
+      hint += " \u00b7 \u2260 Announce GM";
+    } else {
+      gmv.className = "value";
+    }
+    setText("v_gm_mac_hint", hint);
+  }
   setText("v_gm_clockid", d.gm_clock_id || "\u2014");
   if (typeof d.gm_class === "number") {
     let cls = "value";
@@ -715,6 +766,19 @@ function render(d) {
                        (typeof d.gm_priority2 === "number" ? d.gm_priority2 : "?"));
   setText("v_gm_utc", typeof d.gm_utc_offset === "number" ? ((d.gm_utc_offset >= 0 ? "+" : "") + d.gm_utc_offset + " s") : "\u2014");
   setText("v_gm_src", typeof d.gm_time_source === "number" ? ("0x" + d.gm_time_source.toString(16).toUpperCase().padStart(2,"0")) : "\u2014");
+  setText("v_gm_steps", d.gm_steps_removed != null ? d.gm_steps_removed : "\u2014");
+  if (d.gm_flags) {
+    const badge = (on, label) => '<span class="chip ' + (on ? "ok" : "dim") + '">' + label + "</span>";
+    let html = badge(d.gm_flags.ptp_timescale, "PTP") + " "
+             + badge(d.gm_flags.utc_offset_valid, "UTC") + " "
+             + badge(d.gm_flags.time_traceable, "TIME") + " "
+             + badge(d.gm_flags.freq_traceable, "FREQ");
+    if (d.gm_flags.leap61) html += " " + badge(true, "LEAP61");
+    if (d.gm_flags.leap59) html += " " + badge(true, "LEAP59");
+    $("v_gm_flags").innerHTML = html;
+  } else {
+    setText("v_gm_flags", "\u2014");
+  }
 
   /* Servo */
   setText("v_servo", stateUp);
@@ -757,14 +821,15 @@ function render(d) {
     setText("v_corr", "\u2014");
   }
   if (typeof d.quality_pct === "number") {
-    setText("v_qual", d.quality_pct + "%");
+    let txt = d.quality_pct + "%";
+    if (typeof d.quality_loose_pct === "number") txt += " / " + d.quality_loose_pct + "%";
+    setText("v_qual", txt);
     $("v_qual").className = "value " + (d.quality_pct >= 80 ? "ok" : d.quality_pct >= 50 ? "warn" : "err");
   } else {
     setText("v_qual", "\u2014");
   }
-  setText("v_phc", d.phc_residual_ns != null ? ((d.phc_residual_ns >= 0 ? "+" : "") + d.phc_residual_ns + " ns") : "\u2014");
-  if (d.locked_for && d.locked_for !== "00:00:00") {
-    let txt = "locked " + d.locked_for;
+  if (d.locked_for_s > 0) {
+    let txt = "locked " + formatUptime(d.locked_for_s);
     if (typeof d.last_sync_age_ms === "number") {
       txt += " \u00B7 sync " + (d.last_sync_age_ms / 1000).toFixed(1) + "s ago";
     }
@@ -774,30 +839,37 @@ function render(d) {
   } else {
     setText("v_lock_age", "\u2014");
   }
+  setText("v_rejects", (d.reject_total != null ? d.reject_total.toLocaleString() : "\u2014") +
+                       " \u00B7 " + (d.reject_streak != null ? d.reject_streak : "\u2014"));
+  $("v_rejects").className = counterClass(d.reject_streak, 1, 45);
+  setText("v_dreq_drops", d.delay_req_drops != null ? d.delay_req_drops.toLocaleString() : "\u2014");
+  $("v_dreq_drops").className = counterClass(d.delay_req_drops, 1, 10);
 
   /* GM Diagnostics — counters */
   setText("v_sync_rx", (d.sync_rx_count != null ? d.sync_rx_count.toLocaleString() : "\u2014"));
   setText("v_fu_rx",   (d.followup_rx_count != null ? d.followup_rx_count.toLocaleString() : "\u2014"));
   setText("v_dr_rx",   (d.delay_resp_rx_count != null ? d.delay_resp_rx_count.toLocaleString() : "\u2014"));
   setText("v_ann_rx",  (d.announce_rx_count != null ? d.announce_rx_count.toLocaleString() : "\u2014"));
-  /* Step mode badge */
+  /* Step mode badge \u2014 two_step derived: sync_rx_count - one_step_count
+   * (two_step_count is no longer emitted; it's redundant with these two). */
   let mode = "?";
-  if (typeof d.two_step_count === "number" && typeof d.one_step_count === "number") {
-    if (d.two_step_count > 0 && d.one_step_count === 0)      mode = "two-step";
-    else if (d.one_step_count > 0 && d.two_step_count === 0) mode = "one-step";
-    else if (d.two_step_count > 0 && d.one_step_count > 0)   mode = "mixed";
-    else                                                       mode = "none";
+  if (typeof d.sync_rx_count === "number" && typeof d.one_step_count === "number") {
+    const two = d.sync_rx_count - d.one_step_count;
+    if (two > 0 && d.one_step_count === 0)      mode = "two-step";
+    else if (d.one_step_count > 0 && two === 0) mode = "one-step";
+    else if (two > 0 && d.one_step_count > 0)   mode = "mixed";
+    else                                          mode = "none";
   }
   setText("v_step_mode", mode);
 
   /* Timing health */
   if (typeof d.sync_ivl_mean_us === "number" && d.sync_ivl_window > 0) {
-    setText("v_sync_ivl", fmtUs(d.sync_ivl_mean_us) + " (n=" + d.sync_ivl_window + ")");
+    setText("v_sync_ivl", fmtUs(d.sync_ivl_mean_us) + " \u00b1 " + fmtUs(d.sync_ivl_sd_us) + " (n=" + d.sync_ivl_window + ")");
   } else {
     setText("v_sync_ivl", "\u2014");
   }
   if (typeof d.fu_latency_mean_us === "number" && d.fu_latency_window > 0) {
-    setText("v_fu_lat", fmtUs(d.fu_latency_mean_us) + " (n=" + d.fu_latency_window + ")");
+    setText("v_fu_lat", fmtUs(d.fu_latency_mean_us) + " \u00b1 " + fmtUs(d.fu_latency_sd_us) + " (n=" + d.fu_latency_window + ")");
   } else {
     setText("v_fu_lat", "\u2014");
   }
@@ -817,7 +889,6 @@ function render(d) {
   $("v_gm_chg").className = counterClass(d.gm_identity_changes, 1, 5);
   setText("v_class_chg", d.gm_class_transitions != null ? d.gm_class_transitions : "\u2014");
   $("v_class_chg").className = counterClass(d.gm_class_transitions, 1, 5);
-  setText("v_pulse_seq", d.sync_pulse_seq != null ? d.sync_pulse_seq.toLocaleString() : "\u2014");
 
   /* Tasks */
   if (Array.isArray(d.tasks)) {

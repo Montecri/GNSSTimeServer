@@ -70,6 +70,34 @@
 
 #include "status_page.h"   /* defines STATUS_PAGE_HTML */
 #include "ota_page.h"      /* defines OTA_PAGE_HTML */
+
+#include <stdarg.h>
+
+/* ── Bounded JSON append ──
+ * snprintf returns the WOULD-HAVE-written length when it truncates; the
+ * naive `off += snprintf(buf + off, CAP - off, ...)` pattern therefore lets
+ * `off` sail past CAP on the first truncation, after which the next call's
+ * `CAP - off` underflows (size_t) and writes out of bounds. This helper
+ * makes it impossible: `off` saturates at CAP-1 (the NUL) and further
+ * appends become no-ops, yielding truncated-but-safe JSON — the caller
+ * checks for truncation once, at the end, and sends 500 instead. */
+__attribute__((format(printf, 4, 5)))
+static size_t web_append(char *buf, size_t cap, size_t off, const char *fmt, ...)
+{
+    if (off >= cap)
+        return off;
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(buf + off, cap - off, fmt, ap);
+    va_end(ap);
+    if (n < 0)
+        return off;
+    off += (size_t)n;
+    if (off >= cap)
+        off = cap - 1;
+    return off;
+}
+
 #include "ota_handler.h"   /* defines ota_upload_handler, ota_info_handler */
 
 /* The static globals below are defined in main-slave.c. They are referenced
@@ -161,14 +189,8 @@ static esp_err_t status_handler(httpd_req_t *req)
     int64_t path_delay   = g_slave_path_delay_ns;
     double  freq_ppb     = g_slave_freq_ppb;
     bool    slave_locked = g_slave_locked;
-    int64_t lock_ms      = g_lock_acquired_ms;       /* renamed from g_lock_start_ms */
+    int64_t lock_ms      = g_lock_acquired_ms;
     int64_t last_sync_ms = g_last_sync_ms;
-    uint32_t sync_pulse  = atomic_load(&g_sync_rx_pulse_seq);
-
-    /* PHC residual: read whatever main.c populates here. If the slave doesn't
-     * yet write to g_phc_offset_ns (it's a porting-recommendation item), this
-     * just reports zero — the front-end handles "0 ns" cleanly. */
-    int64_t phc_resid    = g_phc_offset_ns;
 
     /* Shared system state */
     uint32_t emac_rst    = g_emac_restart_count;
@@ -179,18 +201,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     gp = g_gm_props;
     portEXIT_CRITICAL(&g_gm_props_lock);
 
-    /* GM MAC (8-byte clock ID is the IEEE 1588 identity; we also expose the
-     * 6-byte source MAC of the latest Sync sender for human matching). */
-    uint8_t gm_mac[6];
-    bool gm_known;
-    /* g_master_mac is touched from ptp_rx_task; brief spinlock is enough. */
-    portENTER_CRITICAL(&g_slave_spinlock);
-    memcpy(gm_mac, g_master_mac, 6);
-    gm_known = g_master_mac_known;
-    portEXIT_CRITICAL(&g_slave_spinlock);
-
-    /* GM diagnostics: snapshot counters + windowed stats. Hold the lock once,
-     * copy out, then release before doing the float maths. */
+    /* GM diagnostics: snapshot counters + windowed stats + Sync/Announce
+     * sender identity. Hold the lock once, copy out, then release before
+     * doing the float maths. */
     int64_t off_win[GM_DIAG_WINDOW];
     int64_t dly_win[GM_DIAG_WINDOW];
     int64_t sj_win[GM_DIAG_WINDOW];
@@ -200,8 +213,13 @@ static esp_err_t status_handler(httpd_req_t *req)
     uint32_t cnt_sync, cnt_fu, cnt_dr, cnt_ann;
     uint32_t gap_sync, gap_ann;
     uint32_t orph_fu, orph_dr;
-    uint32_t two_step, one_step;
+    uint32_t one_step;
     uint32_t gm_id_chg, post_lock_sp;
+    uint8_t  sync_src_id[8];
+    bool     sync_src_known;
+    uint32_t sync_src_changes;
+    uint8_t  gm_clkid[8];
+    bool     gm_clkid_known;
 
     portENTER_CRITICAL(&g_gm_diag_lock);
     off_n = g_gm_diag.offset_count;
@@ -212,18 +230,22 @@ static esp_err_t status_handler(httpd_req_t *req)
     memcpy(dly_win, g_gm_diag.delay_window,            sizeof(int64_t) * dly_n);
     memcpy(sj_win,  g_gm_diag.sync_interval_window,    sizeof(int64_t) * sj_n);
     memcpy(fl_win,  g_gm_diag.followup_latency_window, sizeof(int64_t) * fl_n);
-    cnt_sync     = g_gm_diag.sync_rx_count;
-    cnt_fu       = g_gm_diag.followup_rx_count;
-    cnt_dr       = g_gm_diag.delay_resp_rx_count;
-    cnt_ann      = g_gm_diag.announce_rx_count;
-    gap_sync     = g_gm_diag.sync_seq_gaps;
-    gap_ann      = g_gm_diag.announce_seq_gaps;
-    orph_fu      = g_gm_diag.followup_orphans;
-    orph_dr      = g_gm_diag.delay_resp_orphans;
-    two_step     = g_gm_diag.two_step_count;
-    one_step     = g_gm_diag.one_step_count;
-    gm_id_chg    = g_gm_diag.gm_identity_changes;
-    post_lock_sp = g_gm_diag.post_lock_spikes;
+    cnt_sync         = g_gm_diag.sync_rx_count;
+    cnt_fu           = g_gm_diag.followup_rx_count;
+    cnt_dr           = g_gm_diag.delay_resp_rx_count;
+    cnt_ann          = g_gm_diag.announce_rx_count;
+    gap_sync         = g_gm_diag.sync_seq_gaps;
+    gap_ann          = g_gm_diag.announce_seq_gaps;
+    orph_fu          = g_gm_diag.followup_orphans;
+    orph_dr          = g_gm_diag.delay_resp_orphans;
+    one_step         = g_gm_diag.one_step_count;
+    gm_id_chg        = g_gm_diag.gm_identity_changes;
+    post_lock_sp     = g_gm_diag.post_lock_spikes;
+    sync_src_known   = g_gm_diag.sync_src_known;
+    memcpy(sync_src_id, g_gm_diag.sync_src_id, 8);
+    sync_src_changes = g_gm_diag.sync_src_changes;
+    gm_clkid_known   = g_gm_diag.gm_id_known;
+    memcpy(gm_clkid, g_gm_diag.current_gm_id, 8);
     portEXIT_CRITICAL(&g_gm_diag_lock);
 
     /* Asymmetry windows — same idea, separate lock */
@@ -254,14 +276,20 @@ static esp_err_t status_handler(httpd_req_t *req)
     web_stats_i64(sj_win,  sj_n,  &sj_mean,  &sj_sd);
     web_stats_i64(fl_win,  fl_n,  &fl_mean,  &fl_sd);
 
-    /* Quality: % of recent offsets within ±100 ns — matches OLED servo screen */
-    int qual_pct = 0;
+    /* Quality: % of recent offsets within the tight/loose envelopes —
+     * same thresholds the OLED servo screen's Q-tight/Q-loose uses. */
+    int qual_pct = 0, qual_loose_pct = 0;
     if (off_n > 0)
     {
-        int good = 0;
+        int good_tight = 0, good_loose = 0;
         for (int i = 0; i < off_n; i++)
-            if (llabs(off_win[i]) <= 100) good++;
-        qual_pct = (good * 100) / off_n;
+        {
+            int64_t a = llabs(off_win[i]);
+            if (a <= SLAVE_QUALITY_THRESHOLD_TIGHT_NS) good_tight++;
+            if (a <= SLAVE_QUALITY_THRESHOLD_LOOSE_NS) good_loose++;
+        }
+        qual_pct       = (good_tight * 100) / off_n;
+        qual_loose_pct = (good_loose * 100) / off_n;
     }
 
     /* Linreg slope — re-use the slave's helper directly */
@@ -296,6 +324,38 @@ static esp_err_t status_handler(httpd_req_t *req)
     size_t heap_min  = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_lfb  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
 
+    /* heap_leak: delta vs. the baseline heap_monitor_task took ~10 s after
+     * boot; null until that baseline exists. */
+    uint32_t heap_baseline = atomic_load(&g_heap_baseline_free);
+    bool     have_leak     = (heap_baseline != 0);
+    int32_t  heap_leak     = have_leak ? (int32_t)heap_free - (int32_t)heap_baseline : 0;
+
+    /* ESP32-P4 retention-capable internal SRAM. This reports the live
+     * capability heap, rather than a build-specific address copied from a
+     * startup log. */
+#ifdef MALLOC_CAP_RETENTION
+    size_t retent_total = heap_caps_get_total_size(MALLOC_CAP_RETENTION);
+    size_t retent_free  = heap_caps_get_free_size(MALLOC_CAP_RETENTION);
+#else
+    size_t retent_total = 0;
+    size_t retent_free  = 0;
+#endif
+
+    /* Watchdog health */
+    uint8_t  wdt_state  = atomic_load(&g_wdt_state);
+    uint32_t wdt_alerts = atomic_load(&g_wdt_alerts);
+    uint32_t wdt_last_s = atomic_load(&g_wdt_last_alert_s);
+    const char *wdt_state_str;
+    switch ((wdt_state_t)wdt_state)
+    {
+    case WDT_ARMING:        wdt_state_str = "arming";        break;
+    case WDT_OK:             wdt_state_str = "ok";            break;
+    case WDT_PHC_FROZEN:     wdt_state_str = "phc_frozen";    break;
+    case WDT_HEAP_CRITICAL:  wdt_state_str = "heap_critical"; break;
+    case WDT_RESTART_LIMIT:  wdt_state_str = "restart_limit"; break;
+    default:                 wdt_state_str = "arming";        break;
+    }
+
     /* App info (project name, version, compile time, ELF SHA) */
     const esp_app_desc_t *app = esp_app_get_description();
 
@@ -314,26 +374,20 @@ static esp_err_t status_handler(httpd_req_t *req)
              g_clock_id[0], g_clock_id[1], g_clock_id[2], g_clock_id[3],
              g_clock_id[4], g_clock_id[5], g_clock_id[6], g_clock_id[7]);
 
-    char gm_mac_str[18] = "00:00:00:00:00:00";
-    if (gm_known)
+    /* Sync-source identity — clockIdentity from the last Sync's
+     * sourcePortIdentity. Same string format as clock_id/gm_clock_id so the
+     * dashboard can do a plain string compare against gm_clock_id. */
+    char sync_src_str[24] = {0};
+    if (sync_src_known)
     {
-        snprintf(gm_mac_str, sizeof(gm_mac_str),
-                 "%02X:%02X:%02X:%02X:%02X:%02X",
-                 gm_mac[0], gm_mac[1], gm_mac[2],
-                 gm_mac[3], gm_mac[4], gm_mac[5]);
+        snprintf(sync_src_str, sizeof(sync_src_str),
+                 "%02X%02X %02X%02X %02X%02X %02X%02X",
+                 sync_src_id[0], sync_src_id[1], sync_src_id[2], sync_src_id[3],
+                 sync_src_id[4], sync_src_id[5], sync_src_id[6], sync_src_id[7]);
     }
 
-    /* GM "clock ID" — IEEE 1588 ordinarily reports an 8-byte identifier
-     * derived from MAC (FF:FE-injected) plus a port number. The slave reads
-     * the Announce sender's clock_id into g_gm_diag.current_gm_id; expose
-     * it here as a colon-grouped hex string. */
-    char gm_clkid_str[24] = "----------------";
-    bool gm_clkid_known;
-    uint8_t gm_clkid[8];
-    portENTER_CRITICAL(&g_gm_diag_lock);
-    gm_clkid_known = g_gm_diag.gm_id_known;
-    memcpy(gm_clkid, g_gm_diag.current_gm_id, 8);
-    portEXIT_CRITICAL(&g_gm_diag_lock);
+    /* GM "clock ID" — the Announce sender's clockIdentity. */
+    char gm_clkid_str[24] = {0};
     if (gm_clkid_known)
     {
         snprintf(gm_clkid_str, sizeof(gm_clkid_str),
@@ -343,26 +397,23 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
 
     char ip_str[20] = "0.0.0.0";
+    bool have_ip = false;
     if (g_eth_netif)
     {
         esp_netif_ip_info_t ipinfo;
         if (esp_netif_get_ip_info(g_eth_netif, &ipinfo) == ESP_OK && ipinfo.ip.addr != 0)
         {
             snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ipinfo.ip));
+            have_ip = true;
         }
     }
 
-    /* "Locked for" string (HH:MM:SS) — mirror master pattern */
-    char locked_for[16] = "00:00:00";
+    /* "Locked for", now a plain second count (0 when not locked) */
+    int64_t locked_for_s = 0;
     if (slave_locked && lock_ms > 0)
     {
-        int64_t held_s = (now_ms - lock_ms) / 1000;
-        if (held_s < 0) held_s = 0;
-        unsigned h = (unsigned)(held_s / 3600);
-        unsigned m = (unsigned)((held_s % 3600) / 60);
-        unsigned s = (unsigned)(held_s % 60);
-        if (h > 999) h = 999;
-        snprintf(locked_for, sizeof(locked_for), "%02u:%02u:%02u", h, m, s);
+        locked_for_s = (now_ms - lock_ms) / 1000;
+        if (locked_for_s < 0) locked_for_s = 0;
     }
 
     /* Last-Sync age (ms) — clamp to >= 0 */
@@ -377,7 +428,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     if (tarr) got = uxTaskGetSystemState(tarr, n_tasks, NULL);
 
     /* ---------- build JSON ---------- */
-    const size_t BUF_SZ = 8192;
+    /* config (~0.4 KB) + gm_flags + wdt push the worst case past the old
+     * 8 KB buffer. */
+    const size_t BUF_SZ = 10240;
     char *buf = (char *)malloc(BUF_SZ);
     if (!buf)
     {
@@ -401,69 +454,109 @@ static esp_err_t status_handler(httpd_req_t *req)
     char compile_str[40] = {0};
     if (app) snprintf(compile_str, sizeof(compile_str), "%s %s", app->date, app->time);
 
-    off += snprintf(buf + off, BUF_SZ - off,
+    off = web_append(buf, BUF_SZ, off,
         "{"
         /* device */
         "\"chip\":\"ESP32-P4\","
         "\"chip_rev\":\"v%d.%d\","
-        "\"cpu_mhz\":%d,"
+        "\"cpu_mhz\":%" PRIu32 ","
         "\"project\":\"%s\","
         "\"app_version\":\"%s\","
         "\"idf_version\":\"%s\","
         "\"compile_time\":\"%s\","
         "\"elf_sha\":\"%s\","
-        "\"flash_mb\":16,"
-        "\"flash_mode\":\"DIO\","
-        "\"flash_mhz\":80,"
+        "\"flash_mb\":%" PRIu32 ","
+        "\"flash_mode\":\"%s\","
+        "\"flash_mhz\":%" PRIu32 ","
         "\"uptime_s\":%lld,"
         /* memory */
         "\"heap_free\":%u,"
         "\"heap_min\":%u,"
-        "\"heap_lfb\":%u,"
-        "\"heap_leak\":0,"
-        "\"retent_kb\":141,"
-        "\"ram1_kb\":384,"
-        "\"ram2_kb\":18,"
-        "\"rtc_kb\":31,"
-        "\"tcm_kb\":7,"
-        /* network */
-        "\"link_up\":%s,"
-        "\"l2tap_ready\":%s,"
-        "\"ip\":\"%s\","
-        "\"ip_source\":\"DHCP/static\","
-        "\"mac\":\"%s\","
-        "\"hostname\":\"%s\","
-        "\"emac_restarts\":%" PRIu32 ","
-        "\"promiscuous\":false,"
-        "\"wdt_healthy\":true,"
-        /* PTP role / identity */
-        "\"role\":\"SLAVE\","
-        "\"clock_id\":\"%s\","
-        "\"gm_mac\":\"%s\","
-        "\"gm_clock_id\":\"%s\",",
+        "\"heap_lfb\":%u,",
         chip.revision / 100, chip.revision % 100,
-        (int)WEB_CPU_MHZ,
+        g_boot_facts.cpu_mhz,
         app ? app->project_name : "PTP_Slave",
         app ? app->version      : "unknown",
         app ? app->idf_ver      : esp_get_idf_version(),
         compile_str,
         sha_str,
+        g_boot_facts.flash_bytes / (1024u * 1024u),
+        g_boot_facts.flash_mode,
+        g_boot_facts.flash_mhz,
         (long long)uptime_s,
-        (unsigned)heap_free, (unsigned)heap_min, (unsigned)heap_lfb,
+        (unsigned)heap_free, (unsigned)heap_min, (unsigned)heap_lfb);
+
+    if (have_leak)
+        off = web_append(buf, BUF_SZ, off, "\"heap_leak\":%" PRId32 ",", heap_leak);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"heap_leak\":null,");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"heap_internal_total\":%u,"
+        "\"retent_total\":%u,"
+        "\"retent_free\":%u,",
+        (unsigned)g_boot_facts.heap_internal_total,
+        (unsigned)retent_total,
+        (unsigned)retent_free);
+
+    if (g_boot_facts.rtc_heap_total >= 0)
+        off = web_append(buf, BUF_SZ, off, "\"rtc_heap_total\":%ld,", g_boot_facts.rtc_heap_total);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"rtc_heap_total\":null,");
+    if (g_boot_facts.tcm_heap_total >= 0)
+        off = web_append(buf, BUF_SZ, off, "\"tcm_heap_total\":%ld,", g_boot_facts.tcm_heap_total);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"tcm_heap_total\":null,");
+
+    /* network */
+    off = web_append(buf, BUF_SZ, off,
+        "\"link_up\":%s,"
+        "\"l2tap_ready\":%s,"
+        "\"ip\":\"%s\",",
         link_up     ? "true" : "false",
         l2tap_ready ? "true" : "false",
-        ip_str,
+        ip_str);
+
+    if (have_ip)
+        off = web_append(buf, BUF_SZ, off, "\"ip_source\":\"%s\",", g_static_applied ? "static" : "DHCP");
+    else
+        off = web_append(buf, BUF_SZ, off, "\"ip_source\":null,");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"mac\":\"%s\","
+        "\"hostname\":\"%s\","
+        "\"emac_restarts\":%" PRIu32 ","
+        "\"promiscuous\":%s,"
+        "\"wdt\":{\"state\":\"%s\",\"alerts\":%" PRIu32 ",",
         mac_str,
         g_hostname[0] ? g_hostname : "",
         emac_rst,
-        clk_str,
-        gm_mac_str,
-        gm_clkid_str);
+        g_promiscuous ? "true" : "false",
+        wdt_state_str, wdt_alerts);
+
+    if (wdt_last_s > 0)
+        off = web_append(buf, BUF_SZ, off, "\"last_alert_uptime_s\":%" PRIu32 "},", wdt_last_s);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"last_alert_uptime_s\":null},");
+
+    /* PTP role / identity */
+    off = web_append(buf, BUF_SZ, off, "\"clock_id\":\"%s\",", clk_str);
+
+    if (gm_clkid_known)
+        off = web_append(buf, BUF_SZ, off, "\"gm_clock_id\":\"%s\",", gm_clkid_str);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"gm_clock_id\":null,");
+
+    if (sync_src_known)
+        off = web_append(buf, BUF_SZ, off, "\"sync_src_id\":\"%s\",", sync_src_str);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"sync_src_id\":null,");
+    off = web_append(buf, BUF_SZ, off, "\"sync_src_changes\":%" PRIu32 ",", sync_src_changes);
 
     /* GM properties — emit nulls when no Announce has arrived */
     if (gp.valid)
     {
-        off += snprintf(buf + off, BUF_SZ - off,
+        off = web_append(buf, BUF_SZ, off,
             "\"gm_class\":%u,"
             "\"gm_accuracy\":%u,"
             "\"gm_priority1\":%u,"
@@ -471,6 +564,10 @@ static esp_err_t status_handler(httpd_req_t *req)
             "\"gm_variance\":%u,"
             "\"gm_utc_offset\":%d,"
             "\"gm_time_source\":%u,"
+            "\"gm_steps_removed\":%u,"
+            "\"gm_flags\":{\"ptp_timescale\":%s,\"utc_offset_valid\":%s,"
+                         "\"time_traceable\":%s,\"freq_traceable\":%s,"
+                         "\"leap61\":%s,\"leap59\":%s},"
             "\"gm_class_transitions\":%" PRIu32 ",",
             (unsigned)gp.clock_class,
             (unsigned)gp.accuracy,
@@ -479,11 +576,18 @@ static esp_err_t status_handler(httpd_req_t *req)
             (unsigned)gp.variance,
             (int)gp.utc_offset,
             (unsigned)gp.time_source,
+            (unsigned)gp.steps_removed,
+            (gp.announce_flags & PTP_FLAG_PTP_TIMESCALE)    ? "true" : "false",
+            (gp.announce_flags & PTP_FLAG_UTC_OFFSET_VALID) ? "true" : "false",
+            (gp.announce_flags & PTP_FLAG_TIME_TRACEABLE)   ? "true" : "false",
+            (gp.announce_flags & PTP_FLAG_FREQ_TRACEABLE)   ? "true" : "false",
+            (gp.announce_flags & PTP_FLAG_LEAP61)           ? "true" : "false",
+            (gp.announce_flags & PTP_FLAG_LEAP59)           ? "true" : "false",
             gp.class_transition_count);
     }
     else
     {
-        off += snprintf(buf + off, BUF_SZ - off,
+        off = web_append(buf, BUF_SZ, off,
             "\"gm_class\":null,"
             "\"gm_accuracy\":null,"
             "\"gm_priority1\":null,"
@@ -491,18 +595,19 @@ static esp_err_t status_handler(httpd_req_t *req)
             "\"gm_variance\":null,"
             "\"gm_utc_offset\":null,"
             "\"gm_time_source\":null,"
+            "\"gm_steps_removed\":null,"
+            "\"gm_flags\":null,"
             "\"gm_class_transitions\":0,");
     }
 
     /* Servo state + offsets + windows */
-    off += snprintf(buf + off, BUF_SZ - off,
+    off = web_append(buf, BUF_SZ, off,
         "\"servo_state\":\"%s\","
-        "\"locked_for\":\"%s\","
+        "\"locked_for_s\":%lld,"
         "\"offset_ns\":%lld,"
         "\"path_delay_ns\":%lld,"
         "\"freq_ppb\":%.2f,"
         "\"linreg_slope_ppb\":%.2f,"
-        "\"phc_residual_ns\":%lld,"
         "\"last_sync_age_ms\":%lld,"
         "\"offset_window\":%d,"
         "\"offset_mean_ns\":%.1f,"
@@ -511,26 +616,26 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"delay_mean_ns\":%.1f,"
         "\"delay_sd_ns\":%.1f,"
         "\"quality_pct\":%d,"
+        "\"quality_loose_pct\":%d,"
         "\"asymmetry_n\":%d,"
         "\"asymmetry_ns\":%lld,"
         "\"corr_m2s_ns\":%lld,"
         "\"corr_s2m_ns\":%lld,",
         web_state_str(st),
-        locked_for,
+        (long long)locked_for_s,
         (long long)offset_ns,
         (long long)path_delay,
         freq_ppb,
         slope_ppb,
-        (long long)phc_resid,
         (long long)last_sync_age_ms,
         off_n, off_mean, off_sd,
         dly_n, dly_mean, dly_sd,
-        qual_pct,
+        qual_pct, qual_loose_pct,
         asy_n, (long long)asy_mean_ns,
         (long long)corr_m2s_mean_ns, (long long)corr_s2m_mean_ns);
 
     /* GM diagnostics — message counters, gap/orphan counts, timing windows */
-    off += snprintf(buf + off, BUF_SZ - off,
+    off = web_append(buf, BUF_SZ, off,
         "\"sync_rx_count\":%" PRIu32 ","
         "\"followup_rx_count\":%" PRIu32 ","
         "\"delay_resp_rx_count\":%" PRIu32 ","
@@ -539,75 +644,69 @@ static esp_err_t status_handler(httpd_req_t *req)
         "\"announce_seq_gaps\":%" PRIu32 ","
         "\"followup_orphans\":%" PRIu32 ","
         "\"delay_resp_orphans\":%" PRIu32 ","
-        "\"two_step_count\":%" PRIu32 ","
         "\"one_step_count\":%" PRIu32 ","
         "\"gm_identity_changes\":%" PRIu32 ","
         "\"post_lock_spikes\":%" PRIu32 ","
-        "\"sync_pulse_seq\":%" PRIu32 ","
         "\"sync_ivl_window\":%d,"
         "\"sync_ivl_mean_us\":%.0f,"
         "\"sync_ivl_sd_us\":%.0f,"
         "\"fu_latency_window\":%d,"
         "\"fu_latency_mean_us\":%.0f,"
         "\"fu_latency_sd_us\":%.0f,"
-        /* slave doesn't serve downstream slaves; null tells the UI to render "n/a" */
-        "\"slaves_active\":null,"
         "\"delay_req_drops\":%" PRIu32 ","
         "\"reject_total\":%" PRIu32 ","
-        "\"reject_streak\":%" PRIu32 ","
-        "\"tasks\":[",
+        "\"reject_streak\":%" PRIu32 ",",
         cnt_sync, cnt_fu, cnt_dr, cnt_ann,
         gap_sync, gap_ann,
         orph_fu, orph_dr,
-        two_step, one_step,
+        one_step,
         gm_id_chg, post_lock_sp,
-        sync_pulse,
         sj_n, sj_mean, sj_sd,
         fl_n, fl_mean, fl_sd,
         atomic_load(&g_delay_req_drops),
         g_slave_total_rejects,
         g_slave_consecutive_rejects);
 
-    /* Per-task block (slave task set; stack sizes from xTaskCreate call sites) */
+    off = web_append(buf, BUF_SZ, off, "%s,", g_config_json);
+
+    off = web_append(buf, BUF_SZ, off, "\"tasks\":[");
+
+    /* Per-task block */
     bool first = true;
     for (UBaseType_t i = 0; i < got && off < BUF_SZ - 200; i++)
     {
         const TaskStatus_t *t = &tarr[i];
         uint32_t hwm_bytes = (uint32_t)t->usStackHighWaterMark * sizeof(StackType_t);
-
-        uint32_t stack_bytes = 0;
         const char *name = t->pcTaskName ? t->pcTaskName : "?";
-        if      (!strcmp(name, "ptp_rx"))          stack_bytes = 8192;
-        else if (!strcmp(name, "delay_req"))       stack_bytes = 4096;
-        else if (!strcmp(name, "gm_diag"))         stack_bytes = 6144;
-        else if (!strcmp(name, "slave_led_watch")) stack_bytes = 3072;
-        else if (!strcmp(name, "pps_led"))         stack_bytes = 2048;
-        else if (!strcmp(name, "led"))             stack_bytes = 2048;
-        else if (!strcmp(name, "display"))         stack_bytes = 4096;
-        else if (!strcmp(name, "btn"))             stack_bytes = 2048;
-        else if (!strcmp(name, "dhcp_fb"))         stack_bytes = 3072;
-        else if (!strcmp(name, "heap_mon"))        stack_bytes = 3072;
-        else if (!strcmp(name, "wdt"))             stack_bytes = 4096;
-        else if (!strcmp(name, "main"))            stack_bytes = 4096;
-        else                                       stack_bytes = hwm_bytes + 1024; /* best effort */
+        long stack_bytes = task_reg_lookup(name); /* -1 => unknown => JSON null */
 
         int core = web_task_core(t->xHandle);
 
-        off += snprintf(buf + off, BUF_SZ - off,
-            "%s{\"name\":\"%s\",\"priority\":%u,\"stack_bytes\":%" PRIu32
+        off = web_append(buf, BUF_SZ, off,
+            "%s{\"name\":\"%s\",\"priority\":%u,\"stack_bytes\":",
+            first ? "" : ",", name, (unsigned)t->uxCurrentPriority);
+        if (stack_bytes >= 0)
+            off = web_append(buf, BUF_SZ, off, "%ld", stack_bytes);
+        else
+            off = web_append(buf, BUF_SZ, off, "null");
+        off = web_append(buf, BUF_SZ, off,
             ",\"hwm_bytes\":%" PRIu32 ",\"core\":%d}",
-            first ? "" : ",",
-            name,
-            (unsigned)t->uxCurrentPriority,
-            stack_bytes,
-            hwm_bytes,
-            core);
+            hwm_bytes, core);
         first = false;
     }
 
-    off += snprintf(buf + off, BUF_SZ - off, "]}");
+    off = web_append(buf, BUF_SZ, off, "]}");
 
     free(tarr);
+
+    /* web_append() saturates `off` at BUF_SZ-1 on truncation. Never send a
+     * truncated (invalid) JSON document. */
+    if (off >= BUF_SZ - 2)
+    {
+        free(buf);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
 
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
@@ -787,6 +886,55 @@ static esp_err_t ota_page_handler(httpd_req_t *req)
 }
 
 /* ----------------------------------------------------------------------------
+ *  POST /api/reboot  --  restart the device
+ *
+ *  Same credentials as OTA (ota_check_basic_auth). Answers first, then
+ *  restarts from a small task after 1 s (as an OTA update does), so the client
+ *  gets the reply. Refused with 409 while an OTA upload is in progress.
+ * --------------------------------------------------------------------------- */
+static void web_reboot_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(WEB_TAG, "Rebooting in 1 second (requested via /api/reboot)...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+static esp_err_t reboot_handler(httpd_req_t *req)
+{
+    if (ota_check_basic_auth(req) != ESP_OK)
+        return ESP_FAIL; /* helper already sent 401/503 */
+
+    /* No request body is expected; drain one if present. */
+    int remaining = req->content_len;
+    char drain[64];
+    while (remaining > 0)
+    {
+        int chunk = remaining < (int)sizeof(drain) ? remaining : (int)sizeof(drain);
+        int r = httpd_req_recv(req, drain, chunk);
+        if (r <= 0)
+            break;
+        remaining -= r;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    if (atomic_load(&g_ota_in_progress))
+    {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"error\":\"OTA update in progress\"}");
+        return ESP_OK;
+    }
+    httpd_resp_sendstr(req, "{\"rebooting\":true,\"in_ms\":1000}");
+    if (xTaskCreate(web_reboot_task, "web_reboot", 2048, NULL, 5, NULL) != pdPASS)
+    {
+        /* No memory for a 2 KB task: the client was promised a reboot. */
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+    return ESP_OK;
+}
+
+/* ----------------------------------------------------------------------------
  *  web_server_start()  --  start the httpd
  * --------------------------------------------------------------------------- */
 static httpd_handle_t web_server_start(void)
@@ -802,6 +950,11 @@ static httpd_handle_t web_server_start(void)
     config.lru_purge_enable  = true;
     config.recv_wait_timeout = 30;          /* OTA: slow uploaders */
     config.send_wait_timeout = 10;
+
+    /* "httpd" never goes through task_create_tracked (esp_http_server owns
+     * its creation) — register its stack size directly so the dashboard's
+     * task table doesn't show it with a null stack. */
+    task_reg_add("httpd", config.stack_size);
 
     ESP_LOGI(WEB_TAG, "Starting HTTP server on port %d", config.server_port);
     esp_err_t err = httpd_start(&server, &config);
@@ -823,6 +976,8 @@ static httpd_handle_t web_server_start(void)
         .uri = "/api/ota/info", .method = HTTP_GET,  .handler = ota_info_handler,   .user_ctx = NULL };
     static const httpd_uri_t uri_ota_upload = {
         .uri = "/api/ota",      .method = HTTP_POST, .handler = ota_upload_handler, .user_ctx = NULL };
+    static const httpd_uri_t uri_reboot = {
+        .uri = "/api/reboot",   .method = HTTP_POST, .handler = reboot_handler,     .user_ctx = NULL };
 
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_status);
@@ -830,9 +985,11 @@ static httpd_handle_t web_server_start(void)
     httpd_register_uri_handler(server, &uri_ota_page);
     httpd_register_uri_handler(server, &uri_ota_info);
     httpd_register_uri_handler(server, &uri_ota_upload);
+    httpd_register_uri_handler(server, &uri_reboot);
 
     ESP_LOGI(WEB_TAG, "HTTP server ready -- open http://<device-ip>/ in a browser");
     ESP_LOGI(WEB_TAG, "  GET  /            -> slave status page");
+    ESP_LOGI(WEB_TAG, "  POST /api/reboot  -> restart (OTA credentials)");
     ESP_LOGI(WEB_TAG, "  GET  /api/status  -> slave status JSON");
     ESP_LOGI(WEB_TAG, "  GET  /api/health  -> load/soak health JSON (heap/cpu/stack/sync_jitter)");
     ESP_LOGI(WEB_TAG, "  GET  /ota         -> OTA upload page (Basic-Auth)");

@@ -140,6 +140,7 @@
 #include "esp_netif.h"
 #include "esp_eth_mac.h"
 #include "esp_eth_mac_esp.h"
+#include "esp_flash.h"
 
 #include "esp_vfs_l2tap.h"
 #include "lwip/prot/ethernet.h"
@@ -362,14 +363,16 @@
  * are all low priority — they never block anything meaningful.
  * ───────────────────────────────────────────────────────────────────── */
 #define PTP_TASK_PRIORITY 5
-#define LED_TASK_STACK 2048
+/* 3072 since 2026-10: 2048 left only ~240 B free on the bench (one log call could overflow) */
+#define LED_TASK_STACK 3072
+#define PPS_LED_TASK_STACK 3072 /* was 2048 inline: ~240 B free */
 #define LED_TASK_PRIO 1  // low priority — never blocks anything
 #define LED_TICK_MS 10   // pattern resolution
 #define PPS_LED_ON_MS 50 // how long the pulse stays lit (tunable)
 #define DISPLAY_TASK_STACK 4096
 #define DISPLAY_TASK_PRIO 1    // lowest meaningful priority
 #define DISPLAY_REFRESH_MS 500 // 2 Hz refresh
-#define BUTTON_TASK_STACK 2048
+#define BUTTON_TASK_STACK 3072 /* was 2048: ~240 B free */
 #define BUTTON_TASK_PRIO 1
 #define BUTTON_POLL_MS 20       // debounce poll interval
 #define BUTTON_DEBOUNCE_TICKS 3 // 3 × 20ms = 60ms stable required
@@ -448,9 +451,19 @@
  *   - Two-step vs one-step
  *
  * Console output every GM_DIAG_INTERVAL_MS — read once a minute or so.
+ * GM_DIAG_INTERVAL_MS and GM_DIAG_WINDOW themselves are #defined once,
+ * just before the gm_diag_t type below, so there is a single source of
+ * truth (this used to be defined twice with identical values).
  * ───────────────────────────────────────────────────────────────────────── */
-#define GM_DIAG_INTERVAL_MS 10000
-#define GM_DIAG_WINDOW 64 /* samples kept for stats */
+
+/* ─────────────────────────────────────────────────────────────────────
+ * Master-timeout and heap-monitor intervals
+ *
+ * Named so the JSON "config" object (see status_handler) can report the
+ * exact values the code uses, instead of retyping literals.
+ * ───────────────────────────────────────────────────────────────────── */
+#define SLAVE_SYNC_TIMEOUT_MS 5000 /* ptp_rx_task: drop lock if no Sync within this */
+#define HEAP_MON_INTERVAL_MS 60000 /* heap_monitor_task sample period */
 
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION 3: Type definitions
@@ -534,6 +547,13 @@ typedef struct
     uint32_t one_step_count;      /* Syncs without TWO_STEP flag */
     uint32_t gm_identity_changes; /* GM clockID changes seen */
     uint32_t post_lock_spikes;    /* |offset| > 1µs after lock — GM noise hint */
+
+    /* Sync/Announce sender tracking (BMCA-visibility bonus, §3) */
+    uint8_t sync_src_id[8]; /* clockIdentity from the last Sync's sourcePortIdentity */
+    bool sync_src_known;
+    uint32_t sync_src_changes; /* times the Sync sender changed (first sender not counted) */
+    uint8_t ann_src_id[8];     /* clockIdentity from the last Announce's sourcePortIdentity */
+    bool ann_src_known;
 
     /* Sequence tracking */
     uint16_t last_sync_seq_rx;
@@ -697,6 +717,11 @@ static _Atomic bool g_l2tap_ready = false;
  * emac_restart_preserve_phc takes this around its stop/start window. */
 static SemaphoreHandle_t g_l2tap_tx_mtx = NULL;
 static volatile bool g_static_applied = false;
+
+/* Reported in the JSON "promiscuous" field. Promiscuous mode is disabled
+ * by design (see the commented-out block in app_main); this stays false
+ * unless that block is ever re-enabled. */
+static bool g_promiscuous = false;
 
 /* A6: Atomic flag latched while emac_restart_preserve_phc() is in
  * progress. Any PHC ioctl or L2TAP write performed concurrently would
@@ -908,9 +933,27 @@ static volatile bool g_phc_stepped = false;
 /* Slave state machine flags */
 static volatile bool g_slave_phc_stepped = false;
 static volatile bool g_phc_residual_measured = false;
-static volatile int64_t g_phc_offset_ns = 0; /* measured steady-state offset */
 static volatile uint64_t g_last_progress_phc_s = 0;
 static volatile uint64_t g_last_progress_check_ms = 0;
+
+/* Heap baseline for the JSON heap_leak field — promoted out of
+ * heap_monitor_task's local so status_handler can read it. 0 = not yet
+ * measured (the task waits 10 s after boot before taking it). */
+static _Atomic uint32_t g_heap_baseline_free = 0;
+
+/* ─── Watchdog health, for the JSON "wdt" object ───
+ * Written only by watchdog_task, read by httpd. */
+typedef enum
+{
+    WDT_ARMING = 0,
+    WDT_OK,
+    WDT_PHC_FROZEN,
+    WDT_HEAP_CRITICAL,
+    WDT_RESTART_LIMIT
+} wdt_state_t;
+static _Atomic uint8_t g_wdt_state = WDT_ARMING;
+static _Atomic uint32_t g_wdt_alerts = 0;       /* count of checks that found a problem */
+static _Atomic uint32_t g_wdt_last_alert_s = 0; /* uptime seconds, 0 = never */
 
 /* ─────────────────────────────────────────────────────────────────────
  * BMCA — best-master and candidate tracking
@@ -1064,6 +1107,54 @@ static void render_screen_gm(void);
 
 /* ─── Added by reorganization: cross-section forward decls ─── */
 void led_set_state(led_state_t new_state);
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * SECTION 5b: Task stack registry
+ *
+ * uxTaskGetSystemState()/TaskStatus_t exposes each task's high-water mark
+ * but NOT the stack size it was created with, so the JSON "stack_bytes"
+ * field (used by the dashboard to compute % stack used) has to come from
+ * somewhere else. task_create_tracked() is a drop-in xTaskCreate() that also
+ * records the requested stack size here; status_handler looks it up by
+ * name. Tasks this file doesn't create itself ("main", "httpd") are
+ * registered directly with task_reg_add(). Unknown names resolve to JSON
+ * null — never an invented number.
+ * ═════════════════════════════════════════════════════════════════════════ */
+#define TASK_REG_MAX 24
+typedef struct
+{
+    char name[configMAX_TASK_NAME_LEN];
+    uint32_t stack_bytes;
+} task_reg_t;
+static task_reg_t g_task_reg[TASK_REG_MAX];
+static _Atomic uint32_t g_task_reg_n = 0;
+
+static void task_reg_add(const char *name, uint32_t stack_bytes)
+{
+    uint32_t i = atomic_load(&g_task_reg_n);
+    if (i >= TASK_REG_MAX)
+        return;
+    strlcpy(g_task_reg[i].name, name, sizeof(g_task_reg[i].name));
+    g_task_reg[i].stack_bytes = stack_bytes;
+    atomic_store(&g_task_reg_n, i + 1); /* publish after the entry is written */
+}
+
+static BaseType_t task_create_tracked(TaskFunction_t fn, const char *name,
+                                      uint32_t stack_bytes, void *arg,
+                                      UBaseType_t prio, TaskHandle_t *out)
+{
+    task_reg_add(name, stack_bytes);
+    return xTaskCreate(fn, name, stack_bytes, arg, prio, out);
+}
+
+static long task_reg_lookup(const char *name) /* -1 => unknown => JSON null */
+{
+    uint32_t n = atomic_load(&g_task_reg_n);
+    for (uint32_t i = 0; i < n; i++)
+        if (strcmp(g_task_reg[i].name, name) == 0)
+            return (long)g_task_reg[i].stack_bytes;
+    return -1;
+}
 
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION 6: Small helpers
@@ -1447,6 +1538,130 @@ static void bmca_update(const bmca_dataset_t *remote)
  * invoked by delay_req_task).
  * ═════════════════════════════════════════════════════════════════════════ */
 
+/* ---- Master selection ------------------------------------------------------
+ * Announce senders are kept in a small table. A sender QUALIFIES only while its
+ * latest Announce is younger than ANNOUNCE_TIMEOUT_SEC and says its time is valid:
+ * clockClass != 248 (248 = never synchronised, e.g. a grandmaster still booting
+ * with its clock at 1970) and the PTP-timescale flag set. The best qualified
+ * sender, ranked like the grandmasters rank each other (priority1, clockClass,
+ * accuracy, variance, priority2, clockIdentity), is SELECTED, and only its Sync,
+ * Follow_Up, Delay_Resp and Announce are used. Before this the slave took timing
+ * from any master: a rebooting grandmaster pulled it to 1970 for ~20 s, and
+ * during a handover a Follow_Up from one master could pair with a Sync from the
+ * other (independent sequence numbers). All callers run in ptp_rx_task. */
+#define SL_MASTERS_MAX 4
+typedef struct
+{
+    bool used;
+    uint8_t port_id[8];      /* header sourcePortIdentity.clockIdentity */
+    int64_t last_ms;         /* esp_timer ms of its latest Announce */
+    bool qualified;
+    bmca_dataset_t ds;
+} sl_master_t;
+static sl_master_t g_sl_masters[SL_MASTERS_MAX];
+static int g_sl_sel = -1;                  /* index of the selected master, -1 = none */
+static volatile uint32_t g_sl_filtered = 0; /* timing messages ignored (not from the selected master) */
+
+static int sl_master_compare(const bmca_dataset_t *a, const bmca_dataset_t *b)
+{
+    if (a->priority1 != b->priority1)     return (a->priority1   < b->priority1)   ? -1 : 1;
+    if (a->clock_class != b->clock_class) return (a->clock_class < b->clock_class) ? -1 : 1;
+    if (a->accuracy != b->accuracy)       return (a->accuracy    < b->accuracy)    ? -1 : 1;
+    if (a->variance != b->variance)       return (a->variance    < b->variance)    ? -1 : 1;
+    if (a->priority2 != b->priority2)     return (a->priority2   < b->priority2)   ? -1 : 1;
+    return memcmp(a->clock_id, b->clock_id, 8);
+}
+
+static void sl_select_master(int64_t now_ms)
+{
+    int best = -1;
+    for (int i = 0; i < SL_MASTERS_MAX; i++)
+    {
+        sl_master_t *m = &g_sl_masters[i];
+        if (!m->used)
+            continue;
+        if (now_ms - m->last_ms > (int64_t)ANNOUNCE_TIMEOUT_SEC * 1000)
+        {
+            m->used = false; /* stopped announcing */
+            continue;
+        }
+        if (m->qualified && (best < 0 || sl_master_compare(&m->ds, &g_sl_masters[best].ds) < 0))
+            best = i;
+    }
+    if (best != g_sl_sel)
+    {
+        if (best >= 0)
+        {
+            const uint8_t *id = g_sl_masters[best].port_id;
+            ESP_LOGW("SLAVE", "Master selected: %02X%02X %02X%02X %02X%02X %02X%02X (class %u)",
+                     id[0], id[1], id[2], id[3], id[4], id[5], id[6], id[7], g_sl_masters[best].ds.clock_class);
+        }
+        else
+        {
+            ESP_LOGW("SLAVE", "No master with valid time (class 248 / not PTP timescale / silent) -- timing ignored");
+            portENTER_CRITICAL(&g_gm_props_lock);
+            g_gm_props.valid = false; /* lock withheld until a valid master is selected */
+            portEXIT_CRITICAL(&g_gm_props_lock);
+        }
+        g_sl_sel = best;
+    }
+}
+
+/* Record an Announce, re-select, and tell whether it came from the selected master. */
+static bool sl_announce_from_selected(const ptp_announce_msg_t *ann, const bmca_dataset_t *ds)
+{
+    int64_t now_ms = esp_timer_get_time() / 1000;
+    const uint8_t *src = ann->hdr.source_port_id.clock_identity;
+    int slot = -1, free_slot = -1, stalest = -1;
+    for (int i = 0; i < SL_MASTERS_MAX; i++)
+    {
+        if (!g_sl_masters[i].used)
+        {
+            if (free_slot < 0)
+                free_slot = i;
+            continue;
+        }
+        if (memcmp(g_sl_masters[i].port_id, src, 8) == 0)
+        {
+            slot = i; /* known sender */
+            break;
+        }
+        /* eviction candidate: prefer a non-qualified entry, then the stalest */
+        if (stalest < 0 ||
+            (g_sl_masters[stalest].qualified && !g_sl_masters[i].qualified) ||
+            (g_sl_masters[stalest].qualified == g_sl_masters[i].qualified &&
+             g_sl_masters[i].last_ms < g_sl_masters[stalest].last_ms))
+            stalest = i;
+    }
+    if (slot < 0)
+    {
+        slot = (free_slot >= 0) ? free_slot : stalest; /* new sender: free slot, else evict the stalest */
+        if (slot == g_sl_sel)
+            g_sl_sel = -1; /* evicted the selected master: force re-selection */
+    }
+    sl_master_t *m = &g_sl_masters[slot];
+    m->used = true;
+    memcpy(m->port_id, src, 8);
+    m->last_ms = now_ms;
+    m->ds = *ds;
+    m->qualified = (ds->clock_class != 248) &&
+                   (ntohs(ann->hdr.flags) & PTP_FLAG_PTP_TIMESCALE) != 0;
+    sl_select_master(now_ms);
+    return g_sl_sel >= 0 && memcmp(g_sl_masters[g_sl_sel].port_id, src, 8) == 0;
+}
+
+/* Sync / Follow_Up / Delay_Resp gate. */
+static bool sl_timing_from_selected(const uint8_t *src)
+{
+    if (g_sl_sel >= 0 &&
+        esp_timer_get_time() / 1000 - g_sl_masters[g_sl_sel].last_ms > (int64_t)ANNOUNCE_TIMEOUT_SEC * 1000)
+        sl_select_master(esp_timer_get_time() / 1000); /* selected master went silent */
+    if (g_sl_sel >= 0 && memcmp(g_sl_masters[g_sl_sel].port_id, src, 8) == 0)
+        return true;
+    g_sl_filtered++;
+    return false;
+}
+
 static void handle_announce(const uint8_t *payload, size_t len)
 {
     if (len < sizeof(ptp_announce_msg_t))
@@ -1456,6 +1671,10 @@ static void handle_announce(const uint8_t *payload, size_t len)
 
     bmca_dataset_t remote;
     announce_to_dataset(ann, &remote);
+
+    /* Only the selected master's Announce counts (see Master selection). */
+    if (!sl_announce_from_selected(ann, &remote))
+        return;
 
     g_last_announce_rx = time(NULL);
 
@@ -1489,6 +1708,22 @@ static void handle_announce(const uint8_t *payload, size_t len)
     uint16_t seq = ntohs(ann->hdr.sequence_id);
     portENTER_CRITICAL(&g_gm_diag_lock);
     g_gm_diag.announce_rx_count++;
+
+    /* Announce sender tracking. A different Announce sender re-baselines
+     * the Announce sequence-gap tracking, same rationale as the Sync-side
+     * re-baseline in handle_sync(). No separate change counter here:
+     * gm_identity_changes (keyed on grandmasterIdentity) already counts
+     * grandmaster changes; the Announce *sender* differs from the GM only
+     * behind a boundary clock. */
+    {
+        const uint8_t *asrc = ann->hdr.source_port_id.clock_identity;
+        if (!g_gm_diag.ann_src_known || memcmp(g_gm_diag.ann_src_id, asrc, 8) != 0)
+        {
+            memcpy(g_gm_diag.ann_src_id, asrc, 8);
+            g_gm_diag.ann_src_known = true;
+            g_gm_diag.announce_seq_initialized = false;
+        }
+    }
 
     /* Announce sequence-gap detection */
     if (g_gm_diag.announce_seq_initialized)
@@ -1551,6 +1786,8 @@ static void handle_sync(const uint8_t *payload, size_t len,
         return;
 
     const ptp_sync_msg_t *sync = (const ptp_sync_msg_t *)payload;
+    if (!sl_timing_from_selected(sync->hdr.source_port_id.clock_identity))
+        return; /* not from the selected master (see Master selection) */
     uint16_t seq = ntohs(sync->hdr.sequence_id);
     uint16_t flags = ntohs(sync->hdr.flags);
 
@@ -1575,6 +1812,26 @@ static void handle_sync(const uint8_t *payload, size_t len,
         g_gm_diag.two_step_count++;
     else
         g_gm_diag.one_step_count++;
+
+    /* Sender tracking. A different Sync sender has its own sequenceId space
+     * and its own transmit schedule: re-baseline sequence-gap and interval
+     * tracking so a grandmaster change is not counted as packet loss or as
+     * a bogus Sync interval. During a window where two grandmasters both
+     * send Sync, the sender alternates on every Sync, so sync_src_changes
+     * climbs quickly and no sequence gaps are counted — that is intended,
+     * honest reporting: alternation is not packet loss. */
+    {
+        const uint8_t *src = sync->hdr.source_port_id.clock_identity;
+        if (!g_gm_diag.sync_src_known || memcmp(g_gm_diag.sync_src_id, src, 8) != 0)
+        {
+            if (g_gm_diag.sync_src_known)
+                g_gm_diag.sync_src_changes++;
+            memcpy(g_gm_diag.sync_src_id, src, 8);
+            g_gm_diag.sync_src_known = true;
+            g_gm_diag.sync_seq_initialized = false; /* next seq becomes the new baseline */
+            g_gm_diag.last_sync_rx_us = 0;           /* skip one interval sample */
+        }
+    }
 
     /* Sync sequence-gap detection */
     if (g_gm_diag.sync_seq_initialized)
@@ -1637,6 +1894,12 @@ static void handle_sync(const uint8_t *payload, size_t len,
     }
 
     taskENTER_CRITICAL(&g_slave_spinlock);
+    /* Follow a GM failover instead of latching the first-ever Sync sender
+     * forever. g_master_mac_known above still gates on "at least one Sync
+     * seen" and is untouched; this only keeps the MAC itself current so
+     * the OLED "GM" line and any future consumer track the live sender. */
+    if (memcmp(g_master_mac, src_mac, 6) != 0)
+        memcpy(g_master_mac, src_mac, 6);
     g_t2 = *rx_hw_ts;
     g_t2_valid = true;
     g_last_sync_seq = seq;
@@ -1670,6 +1933,8 @@ static void handle_follow_up(const uint8_t *payload, size_t len)
         return;
 
     const ptp_sync_msg_t *fu = (const ptp_sync_msg_t *)payload;
+    if (!sl_timing_from_selected(fu->hdr.source_port_id.clock_identity))
+        return; /* not from the selected master */
     uint16_t seq = ntohs(fu->hdr.sequence_id);
 
     /* ── GM diagnostics: FollowUp accounting ── */
@@ -1721,6 +1986,8 @@ static void handle_delay_resp(const uint8_t *payload, size_t len)
         return;
 
     const ptp_delay_resp_msg_t *resp = (const ptp_delay_resp_msg_t *)payload;
+    if (!sl_timing_from_selected(resp->hdr.source_port_id.clock_identity))
+        return; /* not from the selected master */
     uint16_t seq = ntohs(resp->hdr.sequence_id);
 
     /* Must be addressed to us — check requesting_port_id.clock_identity */
@@ -1823,6 +2090,179 @@ static void send_delay_req(void)
  * reacquire (B5) and ever-locked latch (B7) live here.
  * ═════════════════════════════════════════════════════════════════════════ */
 
+/* Outlier gate while LOCKED (see slave_outlier). A sample is an outlier when its
+ * offset is more than SLAVE_SPIKE_NS from the median of the last SLAVE_REF_N accepted
+ * offsets, or its path delay more than SLAVE_PATH_TOL_NS from theirs.
+ * SLAVE_SPIKE_CONFIRM consecutive outliers that agree with each other AND had a
+ * normal path delay are a real move of the master's time (the master's clock moves
+ * t1 and t4 together; a delayed packet changes the delay as much as the offset):
+ * the slave drops LOCK and re-acquires (the servo pulls the offset in; LOCK returns
+ * after SLAVE_LOCK_THRESHOLD good samples). No step: setting the PHC is only accurate
+ * to several-tens of us on this hardware, so a step left the slave just as far off.
+ * While samples are rejected the PHC runs on the learned frequency only.
+ * Before, anything more than 1 us from zero was rejected, so slow wander of a
+ * weak-antenna grandmaster (8-9.5 % of locked samples on the bench) froze the
+ * servo until 45 rejects forced a re-acquire -- the ~5 s lock drops. */
+#define SLAVE_SPIKE_NS 10000
+#ifndef SLAVE_FREQ_LIMIT_PPB
+#define SLAVE_FREQ_LIMIT_PPB 500000.0 /* same value as the servo's output clamp below */
+#endif
+#define SLAVE_SPIKE_CONFIRM 5
+#define SLAVE_REF_N 5
+#define SLAVE_PATH_TOL_NS 5000
+/* slave_outlier() verdicts */
+#define GATE_USE 0    /* consistent with the recent samples: feed the servo */
+#define GATE_REJECT 1 /* outlier: keep it out of the servo, hold the frequency */
+#define GATE_MOVED 2  /* the master's time really moved: re-acquire */
+static int64_t g_sl_ref[SLAVE_REF_N]; /* last accepted offsets while locked (ring) */
+static int64_t g_sl_dref[SLAVE_REF_N]; /* ... and their path delays */
+static int g_sl_ref_n = 0, g_sl_ref_i = 0;
+static int64_t g_sl_out[SLAVE_SPIKE_CONFIRM]; /* consecutive outliers seen */
+static bool g_sl_out_path_ok[SLAVE_SPIKE_CONFIRM]; /* ... with a normal path delay */
+static int g_sl_out_n = 0;
+
+/* The one place that sets the PHC frequency (ppb, clamped to +-SLAVE_FREQ_LIMIT_PPB).
+ * g_slave_freq_ppb is updated under the servo spinlock so the watchdog's
+ * emac_restart_preserve_phc snapshot reads a value coherent with the hardware.
+ * The write is skipped while the PHC is not ready or an EMAC restart is in flight
+ * (the servo state stays updated through the dead window). only_if_changed: skip
+ * the write when the value is unchanged. */
+static void slave_set_freq(double f, bool only_if_changed)
+{
+    if (f > SLAVE_FREQ_LIMIT_PPB)
+        f = SLAVE_FREQ_LIMIT_PPB;
+    if (f < -SLAVE_FREQ_LIMIT_PPB)
+        f = -SLAVE_FREQ_LIMIT_PPB;
+    taskENTER_CRITICAL(&g_servo_spinlock);
+    bool changed = (g_slave_freq_ppb != f);
+    g_slave_freq_ppb = f;
+    int32_t adj = (int32_t)f;
+    taskEXIT_CRITICAL(&g_servo_spinlock);
+    if ((changed || !only_if_changed) && atomic_load(&g_phc_ready) && !atomic_load(&g_emac_restarting))
+        esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj);
+}
+
+/* While samples are rejected, run the PHC on the learned frequency (integral term)
+ * only: the proportional kick of the last accepted sample must not keep acting
+ * with no feedback (with KP 0.7 ppb/ns a 10 us sample is a 7 ppm kick). */
+static void slave_hold_freq(void)
+{
+    slave_set_freq(-g_slave_integral_ppb, true);
+}
+
+static void slave_outlier_reset(void)
+{
+    g_sl_ref_n = 0;
+    g_sl_ref_i = 0;
+    g_sl_out_n = 0;
+}
+
+static int64_t slave_median(const int64_t *v, int n)
+{
+    int64_t s[SLAVE_REF_N];
+    for (int i = 0; i < n; i++)
+        s[i] = v[i];
+    for (int i = 1; i < n; i++)
+        for (int j = i; j > 0 && s[j] < s[j - 1]; j--)
+        {
+            int64_t tmp = s[j];
+            s[j] = s[j - 1];
+            s[j - 1] = tmp;
+        }
+    return s[n / 2];
+}
+
+static void slave_ref_push(int64_t offset, int64_t delay)
+{
+    g_sl_dref[g_sl_ref_i] = delay;
+    g_sl_ref[g_sl_ref_i] = offset;
+    g_sl_ref_i = (g_sl_ref_i + 1) % SLAVE_REF_N;
+    if (g_sl_ref_n < SLAVE_REF_N)
+        g_sl_ref_n++;
+}
+
+/* GATE_USE, GATE_REJECT (outlier), or GATE_MOVED: the master's time really moved
+ * (SLAVE_SPIKE_CONFIRM consecutive outliers that agree, with a normal path delay;
+ * *step_ns = their median). Only called while locked. */
+static int slave_outlier(int64_t offset, int64_t delay, int64_t *step_ns)
+{
+    if (g_sl_ref_n > 0)
+    {
+        int64_t ref = slave_median(g_sl_ref, g_sl_ref_n);
+        int64_t dref = slave_median(g_sl_dref, g_sl_ref_n);
+        /* Both must look normal: an asymmetric delay error shows up 1:1 as an offset
+         * error, so a sample with an abnormal path delay is never trusted -- not even
+         * when a delay burst happens to cancel a real move of the master's time. */
+        if (llabs(offset - ref) > SLAVE_SPIKE_NS || llabs(delay - dref) > SLAVE_PATH_TOL_NS)
+        {
+            if (g_sl_out_n == SLAVE_SPIKE_CONFIRM) /* keep the newest CONFIRM-1 */
+            {
+                for (int i = 1; i < SLAVE_SPIKE_CONFIRM; i++)
+                {
+                    g_sl_out[i - 1] = g_sl_out[i];
+                    g_sl_out_path_ok[i - 1] = g_sl_out_path_ok[i];
+                }
+                g_sl_out_n--;
+            }
+            g_sl_out_path_ok[g_sl_out_n] = (llabs(delay - dref) <= SLAVE_PATH_TOL_NS);
+            g_sl_out[g_sl_out_n++] = offset;
+            if (g_sl_out_n == SLAVE_SPIKE_CONFIRM)
+            {
+                int64_t mn = g_sl_out[0], mx = g_sl_out[0];
+                bool path_ok = true;
+                for (int i = 0; i < SLAVE_SPIKE_CONFIRM; i++)
+                {
+                    if (g_sl_out[i] < mn)
+                        mn = g_sl_out[i];
+                    if (g_sl_out[i] > mx)
+                        mx = g_sl_out[i];
+                    path_ok = path_ok && g_sl_out_path_ok[i];
+                }
+                if (mx - mn <= SLAVE_SPIKE_NS && path_ok)
+                {
+                    int64_t o[SLAVE_SPIKE_CONFIRM];
+                    for (int i = 0; i < SLAVE_SPIKE_CONFIRM; i++)
+                        o[i] = g_sl_out[i];
+                    for (int i = 1; i < SLAVE_SPIKE_CONFIRM; i++)
+                        for (int j = i; j > 0 && o[j] < o[j - 1]; j--)
+                        {
+                            int64_t tmp = o[j];
+                            o[j] = o[j - 1];
+                            o[j - 1] = tmp;
+                        }
+                    *step_ns = o[SLAVE_SPIKE_CONFIRM / 2];
+                    slave_outlier_reset();
+                    return GATE_MOVED;
+                }
+            }
+            return GATE_REJECT;
+        }
+    }
+    g_sl_out_n = 0;
+    slave_ref_push(offset, delay);
+    return GATE_USE;
+}
+
+/* Leave LOCKED -- the one place that does it. The slave re-acquires from here:
+ * LOCK returns after SLAVE_LOCK_THRESHOLD good samples from a traceable master. */
+static void slave_leave_lock(void)
+{
+    g_slave_locked = false;
+    g_slave_stable_count = 0;
+    g_lock_acquired_ms = 0;
+    led_set_state(LED_STATE_ACQUIRING);
+}
+
+/* Is the selected master's time traceable (valid Announce, clockClass < 7)? */
+static bool slave_gm_traceable(void)
+{
+    gm_props_t gp;
+    portENTER_CRITICAL(&g_gm_props_lock);
+    gp = g_gm_props;
+    portEXIT_CRITICAL(&g_gm_props_lock);
+    return gp.valid && gp.clock_class < 7;
+}
+
 static void slave_compute_and_apply(void)
 {
     struct timespec t1, t2, t3, t4;
@@ -1916,99 +2356,85 @@ static void slave_compute_and_apply(void)
      * grows; on crossing SLAVE_REJECT_STREAK_REACQUIRE we drop lock and
      * reset the servo so we don't waste cycles disciplining against
      * noise. The lifetime counter is kept for the web/OLED diagnostics. */
+    /* Diagnostic only: a LOCKED sample more than 1 us off (post_lock_spikes). */
     if (g_slave_locked && llabs(offset) > 1000)
     {
         portENTER_CRITICAL(&g_gm_diag_lock);
         g_gm_diag.post_lock_spikes++;
         portEXIT_CRITICAL(&g_gm_diag_lock);
+    }
 
+    /* The master's traceability, read once: it decides whether a LOCKED slave stays
+     * LOCKED and whether an acquiring one may lock. Checked before the outlier gate,
+     * because a rejected sample returns early. */
+    bool gm_traceable = slave_gm_traceable();
+    if (g_slave_locked && !gm_traceable)
+    {
+        ESP_LOGW("SLAVE", "Lock withheld — GM advertising clockClass >= 7 (HOLDOVER), time not traceable");
+        slave_leave_lock();
+    }
+
+    /* Outlier gate, LOCKED only (see slave_outlier). While acquiring every sample is
+     * used and recorded, so at the moment of lock the history holds exactly the
+     * samples that earned it. */
+    int64_t moved_ns = 0;
+    int gate = GATE_USE;
+    if (g_slave_locked)
+        gate = slave_outlier(offset, delay, &moved_ns);
+    else
+    {
+        g_sl_out_n = 0;
+        slave_ref_push(offset, delay);
+    }
+    if (gate == GATE_REJECT)
+    {
+        /* Keep the sample out of the servo and run on the learned frequency. A long
+         * run of rejects means the gate's history no longer fits: start over. */
+        slave_hold_freq();
         g_slave_total_rejects++;
-        g_slave_consecutive_rejects++;
-
-        if (g_slave_consecutive_rejects >= SLAVE_REJECT_STREAK_REACQUIRE)
+        if (++g_slave_consecutive_rejects >= SLAVE_REJECT_STREAK_REACQUIRE)
         {
             ESP_LOGW("SLAVE",
                      "Reject streak %u >= %d — forcing reacquire",
                      (unsigned)g_slave_consecutive_rejects,
                      SLAVE_REJECT_STREAK_REACQUIRE);
-            g_slave_locked = false;
-            g_slave_stable_count = 0;
-            g_lock_acquired_ms = 0;
             g_slave_consecutive_rejects = 0;
             g_linreg_count = 0;
             g_linreg_idx = 0;
-            led_set_state(LED_STATE_ACQUIRING);
+            slave_leave_lock();
             return;
         }
-
-        /* B5-FIX: a rejected sample must NOT reach the servo or the
-         * linreg window below — falling through would inject the very
-         * spike we just rejected (KP+KI at 1 Hz re-adds ~the full spike
-         * as phase error and pollutes the integrator until it unwinds).
-         * Refresh the exchange timestamp so the rx task's 5 s master-
-         * timeout doesn't preempt the 45-reject streak logic above.
-         * Diagnostics (offset/delay/asymmetry windows, OLED offset)
-         * were already fed before this check and still see the spike. */
         g_slave_last_sync_ms = esp_timer_get_time() / 1000;
         return;
     }
-    else
+    g_slave_consecutive_rejects = 0;
+    if (gate == GATE_MOVED)
     {
-        /* Accepted sample (within ±1 µs while locked, OR not currently locked). */
-        g_slave_consecutive_rejects = 0;
+        /* The master's time really moved. Re-acquire: leave LOCK and let this sample
+         * through to the servo, which pulls the offset in (re-stepping only above
+         * 500 us). No precise step: the PHC set is only good to tens of us here. */
+        ESP_LOGW("SLAVE", "Master time moved by %lld ns (%d consistent samples, path delay normal) -- re-acquiring",
+                 (long long)moved_ns, SLAVE_SPIKE_CONFIRM);
+        slave_leave_lock();
     }
 
-    /* Push to linreg window using slave PHC time as x-axis */
+    /* Servo */
     linreg_push(t2_ns, offset);
-
-    /* Apply frequency correction */
     slave_servo_freq(offset);
-
-    /* Re-step only on genuinely large excursions. Below that, let the
-     * frequency servo trim — re-stepping every cycle creates an endless
-     * "step → drift → re-step" loop because each step zeros out the
-     * crystal-drift estimate.
-     *
-     * 500 µs threshold: well above per-second drift from any reasonable
-     * crystal (≤ ~50 ppm = 50 µs/s), but small enough that we genuinely
-     * step out of any pathological hole. */
     if (llabs(offset) > 500000LL)
     {
         ESP_LOGW("SLAVE", "Residual offset %lld ns - re-stepping", (long long)offset);
         slave_servo_step(offset);
         g_slave_stable_count = 0;
         if (g_slave_locked)
-        {
-            g_slave_locked = false;
-            led_set_state(LED_STATE_ACQUIRING);
-        }
+            slave_leave_lock();
         return;
     }
-
-    /* ─────────────────────────────────────────────
-     * Lock tracking
-     * ───────────────────────────────────────────── */
     g_slave_last_sync_ms = esp_timer_get_time() / 1000;
 
-    /* Is the grandmaster advertising a traceable clockClass right now?
-     * During cold boot the GM sits in clockClass 7 (HOLDOVER) until its own
-     * GNSS servo locks. We must not advertise a trustworthy LOCKED to a GM
-     * that is itself not yet traceable, even though our PHC may track it. */
-    bool gm_traceable;
-    {
-        gm_props_t gp_lk;
-        portENTER_CRITICAL(&g_gm_props_lock);
-        gp_lk = g_gm_props;
-        portEXIT_CRITICAL(&g_gm_props_lock);
-        /* Traceable if we have a valid Announce and class < 7 (e.g. 6 = LOCKED).
-         * If no Announce yet, treat as not-traceable. */
-        gm_traceable = gp_lk.valid && (gp_lk.clock_class < 7);
-    }
-
+    /* Lock decisions */
     if (!g_slave_locked)
     {
-        /* Acquiring — count consecutive good samples, but only allow LOCK to
-         * latch once the GM itself is traceable. */
         if (llabs(offset) < SLAVE_LOCK_OFFSET_NS && gm_traceable)
         {
             if (++g_slave_stable_count >= SLAVE_LOCK_THRESHOLD)
@@ -2035,27 +2461,10 @@ static void slave_compute_and_apply(void)
             g_slave_stable_count = 0;
         }
     }
-    else
+    else if (llabs(offset) > SLAVE_UNLOCK_OFFSET_NS)
     {
-        /* Locked — drop out on a clear servo excursion OR if the GM drops
-         * back into holdover (class >= 7): its time is no longer traceable,
-         * so neither is ours. */
-        if (llabs(offset) > SLAVE_UNLOCK_OFFSET_NS)
-        {
-            g_slave_locked = false;
-            g_slave_stable_count = 0;
-            g_lock_acquired_ms = 0;
-            ESP_LOGW("SLAVE", "Lock lost (offset=%lld ns)", (long long)offset);
-            led_set_state(LED_STATE_ACQUIRING);
-        }
-        else if (!gm_traceable)
-        {
-            g_slave_locked = false;
-            g_slave_stable_count = 0;
-            g_lock_acquired_ms = 0;
-            ESP_LOGW("SLAVE", "Lock withheld — GM advertising clockClass >= 7 (HOLDOVER), time not traceable");
-            led_set_state(LED_STATE_ACQUIRING);
-        }
+        ESP_LOGW("SLAVE", "Lock lost (offset=%lld ns)", (long long)offset);
+        slave_leave_lock();
     }
 
     ESP_LOGI("SLAVE",
@@ -2095,6 +2504,7 @@ static void slave_servo_step(int64_t offset_ns)
     };
     esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_S_PTP_TIME, &t);
 
+    slave_outlier_reset(); /* offset history is no longer valid either */
     /* Reset linreg window — the (t, offset) history is no longer valid
      * after a time discontinuity. Frequency estimate is preserved. */
     g_linreg_count = 0;
@@ -2134,28 +2544,7 @@ static void slave_servo_freq(int64_t offset_ns)
     double correction_ppb =
         SLAVE_SERVO_KP * (double)offset_ns + g_slave_integral_ppb;
 
-    /* Update g_slave_freq_ppb under the servo spinlock so that the
-     * emac_restart_preserve_phc snapshot (in the watchdog) reads a
-     * coherent value with the freq we apply below. */
-    taskENTER_CRITICAL(&g_servo_spinlock);
-    g_slave_freq_ppb = -correction_ppb;
-
-    /* Clamp output */
-    if (g_slave_freq_ppb > SLAVE_FREQ_LIMIT_PPB)
-        g_slave_freq_ppb = SLAVE_FREQ_LIMIT_PPB;
-    if (g_slave_freq_ppb < -SLAVE_FREQ_LIMIT_PPB)
-        g_slave_freq_ppb = -SLAVE_FREQ_LIMIT_PPB;
-
-    int32_t adj = (int32_t)g_slave_freq_ppb;
-    taskEXIT_CRITICAL(&g_servo_spinlock);
-
-    /* A6/B2: Skip the actual ioctl write if PHC isn't ready yet, or if
-     * an EMAC restart is in flight. The integrator state above stays
-     * updated so the servo doesn't lose track during the dead window. */
-    if (!atomic_load(&g_phc_ready) || atomic_load(&g_emac_restarting))
-        return;
-
-    esp_eth_ioctl(g_eth_hndl, ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj);
+    slave_set_freq(-correction_ppb, false);
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
@@ -2298,7 +2687,7 @@ static void ptp_rx_task(void *arg)
         if (g_slave_locked)
         {
             int64_t now_ms = esp_timer_get_time() / 1000;
-            if ((now_ms - g_slave_last_sync_ms) > 5000)
+            if ((now_ms - g_slave_last_sync_ms) > SLAVE_SYNC_TIMEOUT_MS)
             {
                 g_slave_locked = false;
                 g_slave_stable_count = 0;
@@ -2376,13 +2765,6 @@ static void gm_diag_task(void *arg)
         int64_t off_min, off_max;
         compute_stats_i64(snap.offset_window, snap.offset_count,
                           &off_mean, &off_sd, &off_min, &off_max);
-
-        /* B6: Populate g_phc_offset_ns with the slave's measured PHC
-         * residual = rolling mean of recent offsets. Web status page
-         * surfaces this as the "PHC residual" reading; the master writes
-         * a structurally identical value in servo_task. */
-        if (snap.offset_count > 0)
-            g_phc_offset_ns = (int64_t)off_mean;
 
         double dly_mean, dly_sd;
         int64_t dly_min, dly_max;
@@ -2617,6 +2999,7 @@ static void heap_monitor_task(void *arg)
     vTaskDelay(pdMS_TO_TICKS(10000));
 
     size_t baseline_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
+    atomic_store(&g_heap_baseline_free, (uint32_t)baseline_free);
     ESP_LOGI("HEAP", "Baseline free internal heap: %u bytes",
              (unsigned)baseline_free);
 
@@ -2657,7 +3040,7 @@ static void heap_monitor_task(void *arg)
             ESP_LOGI("HEAP", "==============================================");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        vTaskDelay(pdMS_TO_TICKS(HEAP_MON_INTERVAL_MS));
         // ESP_LOGW("HEAP", "HEAP MONITOR WORKING - free=%u bytes", (unsigned)free_internal);
     }
 }
@@ -2852,6 +3235,12 @@ static void watchdog_task(void *arg)
         bool phc_frozen = (cur_phc_s == g_last_progress_phc_s);
         uint64_t elapsed = now_ms - g_last_progress_check_ms;
 
+        /* For the JSON "wdt" object: exactly one alert increment per pass
+         * that found a problem (not per condition), decided after both
+         * checks below have run. */
+        bool wdt_problem = false;
+        wdt_state_t wdt_new_state = WDT_OK;
+
         /* ───── Check 1: PHC freeze ─────
          * The PHC seconds counter should advance by ~30 between checks.
          * If it doesn't advance at all over a 30 s wall-clock window, the
@@ -2860,6 +3249,9 @@ static void watchdog_task(void *arg)
          * watch task. */
         if (phc_frozen && elapsed > 30000)
         {
+            wdt_problem = true;
+            wdt_new_state = WDT_PHC_FROZEN;
+
             ESP_LOGW("WDT",
                      "PHC frozen for %llu ms (phc_s=%llu) — health degraded",
                      (unsigned long long)elapsed,
@@ -2878,6 +3270,7 @@ static void watchdog_task(void *arg)
             }
             else if (g_emac_restart_count >= 10)
             {
+                wdt_new_state = WDT_RESTART_LIMIT;
                 ESP_LOGE("WDT",
                          "EMAC restart limit reached — system needs reboot");
             }
@@ -2896,6 +3289,10 @@ static void watchdog_task(void *arg)
 
         if (free_now < 50000)
         {
+            wdt_problem = true;
+            if (wdt_new_state == WDT_OK)
+                wdt_new_state = WDT_HEAP_CRITICAL;
+
             ESP_LOGE("WDT",
                      "Critical heap pressure (%u bytes free) — attempting recovery",
                      (unsigned)free_now);
@@ -2905,6 +3302,14 @@ static void watchdog_task(void *arg)
                 emac_restart_preserve_phc();
                 vTaskDelay(pdMS_TO_TICKS(5000));
             }
+        }
+
+        atomic_store(&g_wdt_state, (uint8_t)wdt_new_state);
+        if (wdt_problem)
+        {
+            atomic_fetch_add(&g_wdt_alerts, 1);
+            atomic_store(&g_wdt_last_alert_s,
+                        (uint32_t)((now_ms - (uint64_t)g_boot_time_ms) / 1000));
         }
     }
 }
@@ -3019,7 +3424,7 @@ static void led_task(void *arg)
 
 void led_start(void)
 {
-    xTaskCreate(led_task, "led", LED_TASK_STACK, NULL, LED_TASK_PRIO, NULL);
+    task_create_tracked(led_task, "led", LED_TASK_STACK, NULL, LED_TASK_PRIO, NULL);
 }
 
 /* On the slave, the red LED (formerly PPS heartbeat on the master) pulses on
@@ -4354,6 +4759,94 @@ static bool timing_core_bringup(void)
     return true;
 }
 
+/* ═════════════════════════════════════════════════════════════════════════
+ * SECTION 16b: Boot-time static facts + config JSON
+ *
+ * Everything here is either a hardware constant (flash size/mode, heap
+ * capability totals, CPU MHz) or a compile-time #define. Both classes are
+ * read/formatted exactly ONCE, at boot, from app_main — never on the httpd
+ * hot path (rule 1.2.3: no flash access at runtime). g_config_json holds the
+ * pre-rendered "config":{...} JSON fragment; status_handler appends it
+ * verbatim.
+ * ═════════════════════════════════════════════════════════════════════════ */
+typedef struct
+{
+    uint32_t cpu_mhz;
+    uint32_t flash_bytes;
+    char flash_mode[8]; /* e.g. "dio" */
+    uint32_t flash_mhz;
+    size_t heap_internal_total;
+    long rtc_heap_total; /* -1 => emit null */
+    long tcm_heap_total; /* -1 => emit null */
+} boot_facts_t;
+static boot_facts_t g_boot_facts;
+
+static void boot_facts_collect(void)
+{
+    g_boot_facts.cpu_mhz = esp_rom_get_cpu_ticks_per_us();
+
+    uint32_t flash_sz = 0;
+    esp_flash_get_size(NULL, &flash_sz);
+    g_boot_facts.flash_bytes = flash_sz;
+
+    strlcpy(g_boot_facts.flash_mode, CONFIG_ESPTOOLPY_FLASHMODE,
+           sizeof(g_boot_facts.flash_mode));
+    g_boot_facts.flash_mhz = (uint32_t)atoi(CONFIG_ESPTOOLPY_FLASHFREQ);
+
+    g_boot_facts.heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+
+    /* Heap-MANAGED totals (what the allocator owns for this capability), not
+     * physical region sizes — the dashboard's Memory-card labels say so. */
+#ifdef MALLOC_CAP_RTCRAM
+    {
+        size_t t = heap_caps_get_total_size(MALLOC_CAP_RTCRAM);
+        g_boot_facts.rtc_heap_total = (t > 0) ? (long)t : -1;
+    }
+#else
+    g_boot_facts.rtc_heap_total = -1;
+#endif
+
+#ifdef MALLOC_CAP_TCM
+    {
+        size_t t = heap_caps_get_total_size(MALLOC_CAP_TCM);
+        g_boot_facts.tcm_heap_total = (t > 0) ? (long)t : -1;
+    }
+#else
+    g_boot_facts.tcm_heap_total = -1;
+#endif
+}
+
+/* Pre-formatted "config":{...} JSON fragment, built once at boot. Every
+ * value comes from the #define the code actually uses at its real call
+ * site — never retyped. transport/delay_mechanism are fixed by design in
+ * this firmware (L2 Annex F only, E2E only). */
+static char g_config_json[768];
+
+static void config_json_build(void)
+{
+    snprintf(g_config_json, sizeof(g_config_json),
+        "\"config\":{"
+        "\"ptp\":{\"domain\":%d,\"transport\":\"L2\",\"delay_mechanism\":\"E2E\","
+                 "\"announce_timeout_s\":%d,\"sync_timeout_ms\":%d,\"bmca_stability_threshold\":%d},"
+        "\"servo\":{\"kp\":%g,\"ki\":%g,\"linreg_window\":%d,"
+                   "\"lock_offset_ns\":%d,\"lock_threshold\":%d,"
+                   "\"quality_tight_ns\":%d,\"quality_loose_ns\":%d},"
+        "\"diag\":{\"window\":%d,\"asymmetry_window\":%d,\"report_interval_ms\":%d},"
+        "\"hw\":{\"pps_led_on_ms\":%d,\"button_gpio\":%d,\"display_screens\":%d},"
+        "\"net\":{\"dhcp_fallback_timeout_ms\":%d},"
+        "\"mon\":{\"heap_mon_interval_ms\":%d}"
+        "}",
+        (int)PTP_DOMAIN,
+        (int)SLAVE_ANNOUNCE_TIMEOUT_S, (int)SLAVE_SYNC_TIMEOUT_MS, (int)BMCA_STABILITY_THRESHOLD,
+        (double)SLAVE_SERVO_KP, (double)SLAVE_SERVO_KI, (int)LINREG_WINDOW,
+        (int)SLAVE_LOCK_OFFSET_NS, (int)SLAVE_LOCK_THRESHOLD,
+        (int)SLAVE_QUALITY_THRESHOLD_TIGHT_NS, (int)SLAVE_QUALITY_THRESHOLD_LOOSE_NS,
+        (int)GM_DIAG_WINDOW, (int)ASYMMETRY_WINDOW, (int)GM_DIAG_INTERVAL_MS,
+        (int)PPS_LED_ON_MS, (int)DISPLAY_BUTTON_GPIO, (int)DISPLAY_NUM_SCREENS,
+        (int)DHCP_FALLBACK_TIMEOUT_MS,
+        (int)HEAP_MON_INTERVAL_MS);
+}
+
 #include "web_server.h"
 
 /* ═════════════════════════════════════════════════════════════════════════
@@ -4392,8 +4885,8 @@ void app_main(void)
     g_boot_time_ms = esp_timer_get_time() / 1000;
 
     /* Launch button + display tasks (low priority — never block timing-critical work) */
-    xTaskCreate(button_task, "btn", BUTTON_TASK_STACK, NULL, BUTTON_TASK_PRIO, NULL);
-    xTaskCreate(display_task, "display", DISPLAY_TASK_STACK, NULL, DISPLAY_TASK_PRIO, NULL);
+    task_create_tracked(button_task, "btn", BUTTON_TASK_STACK, NULL, BUTTON_TASK_PRIO, NULL);
+    task_create_tracked(display_task, "display", DISPLAY_TASK_STACK, NULL, DISPLAY_TASK_PRIO, NULL);
 
     /* Synchronization primitives — create BEFORE any task or event
      * handler can reference them. */
@@ -4414,11 +4907,11 @@ void app_main(void)
     /* Start LED early so user gets immediate feedback */
     led_start();
     led_set_state(LED_STATE_NO_LINK);
-    xTaskCreate(pps_led_task, "pps_led", 2048, NULL, 1, NULL);
+    task_create_tracked(pps_led_task, "pps_led", PPS_LED_TASK_STACK, NULL, 1, NULL);
 
     /* Drifting / fault state-machine watcher (LOCKED → HOLDOVER → FAULT).
      * Reads g_last_sync_ms periodically. Low priority — purely advisory. */
-    xTaskCreate(slave_led_watch_task, "led_watch", 3072, NULL, 1, NULL);
+    task_create_tracked(slave_led_watch_task, "led_watch", 3072, NULL, 1, NULL);
 
     /* B1: Bring up the timing core NOW — driver is started, so MAC,
      * clock_id, L2TAP, and PHC can come up without waiting for a peer
@@ -4453,11 +4946,12 @@ void app_main(void)
      *
      *   bool promisc = true;
      *   esp_eth_ioctl(g_eth_hndl, ETH_CMD_S_PROMISCUOUS, &promisc);
+     *   g_promiscuous = true;
      *   ESP_LOGI("ETH", "Promiscuous mode: ON");
      */
 
     /* A4: DHCP fallback watcher — runs for the lifetime of the device. */
-    xTaskCreate(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
+    task_create_tracked(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
 
     /* Launch the PTP tasks. They self-gate on g_l2tap_ready / g_phc_ready. */
 
@@ -4465,25 +4959,37 @@ void app_main(void)
      * g_delay_req_q and performs the L2TAP write, off the RX hot path.
      * Priority 5 sits below ptp_rx (7) so receiving Sync wins over
      * sending Delay_Req under flood. */
-    xTaskCreate(delay_req_task, "delay_req", 4096, NULL, 5, NULL);
+    task_create_tracked(delay_req_task, "delay_req", 4096, NULL, 5, NULL);
 
-    xTaskCreate(ptp_rx_task, "ptp_rx", 8192, NULL, 7, NULL);
+    task_create_tracked(ptp_rx_task, "ptp_rx", 8192, NULL, 7, NULL);
 
-    xTaskCreate(heap_monitor_task, "heap_mon", 3072, NULL, 1, NULL);
+    task_create_tracked(heap_monitor_task, "heap_mon", 3072, NULL, 1, NULL);
 
     /* A2: Watchdog — checks every 30 s that the PHC seconds counter is
      * advancing (sampled via emac_get_time, since the slave has no PPS).
      * Triggers emac_restart_preserve_phc on freeze >60 s or critical
      * heap pressure. */
-    xTaskCreate(watchdog_task, "wdt", 4096, NULL, 1, NULL);
+    task_create_tracked(watchdog_task, "wdt", 4096, NULL, 1, NULL);
 
     /* GM-quality diagnostics — logs offset/delay/jitter/loss every 10 s.
      * 6144 stack: ESP_LOGI with %f format on RISC-V softfloat pulls in
      * newlib's full vfprintf which uses ~3 KB of stack per call. */
-    xTaskCreate(gm_diag_task, "gm_diag", 6144, NULL, 2, NULL);
+    task_create_tracked(gm_diag_task, "gm_diag", 6144, NULL, 2, NULL);
+
+    /* This task ("main") never goes through task_create_tracked — register
+     * its stack size directly so the dashboard's task table doesn't show
+     * it with a null stack. ("httpd" registers itself in web_server_start.) */
+    task_reg_add("main", CONFIG_ESP_MAIN_TASK_STACK_SIZE);
 
     ESP_LOGI("SLAVE", "PTP slave initialized");
     ESP_LOGI("MAIN", "All tasks launched. Waiting for Ethernet link...");
+
+    /* Boot-time facts (flash size/mode, heap capability totals, CPU MHz) and
+     * the derived "config" JSON fragment: both are constant for the life of
+     * the process, so collect/format them once here, before the httpd task
+     * (which reads them on every /api/status request) starts. */
+    boot_facts_collect();
+    config_json_build();
 
     /* A1: Start the web server so the slave is reachable for status
      * (GET /, GET /api/status, GET /api/health) and OTA upload
