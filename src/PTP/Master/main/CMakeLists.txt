@@ -7,7 +7,7 @@ idf_component_register(
         # networking stack
         esp_eth esp_event esp_netif lwip
         # storage / OTA
-        app_update esp_partition
+        app_update esp_partition spi_flash
         # system runtime
         esp_system esp_timer freertos vfs
         # peripherals & display

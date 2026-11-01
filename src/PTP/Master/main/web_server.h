@@ -21,7 +21,7 @@
  *  included EXACTLY ONCE, from main.c, AFTER all the static globals it reads
  *  (g_last_offset, g_freq_ppb, g_integral, g_emac_restart_count, g_sync_seq,
  *  g_announce_seq, g_utc_offset, g_gnss_valid, g_gnss_seconds, g_link_up,
- *  g_l2tap_ready, s_led_state, g_phc_offset_ns, g_lock_qual_count,
+ *  g_l2tap_ready, s_led_state, g_phc_offset_ns, g_lock_qual_ring,
  *  g_lock_acquired_ms, g_settled_after_holdover, g_boot_time_ms, g_eth_netif,
  *  g_src_mac, g_clock_id, g_hostname) and after the function
  *  slave_active_count() is
@@ -164,6 +164,128 @@ static int web_task_core(TaskHandle_t h)
 }
 
 /* ----------------------------------------------------------------------------
+ *  web_append_bmca  --  shared "bmca":{...} JSON fragment
+ *
+ *  Used by both /api/status and GET /api/bmca so the two endpoints can never
+ *  disagree about BMCA state. Never calls build_local_dataset() or
+ *  advertised_clock_class() (side effect on g_settled_after_holdover) and
+ *  never writes into *v (single-writer seqlock — httpd only reads).
+ * --------------------------------------------------------------------------- */
+static size_t web_append_bmca(char *buf, size_t cap, size_t off,
+                              bool i_am_master, int64_t uptime_ms,
+                              const bmca_view_t *v)
+{
+    off = web_append(buf, cap, off, "\"bmca\":{");
+
+    /* local: MASTER reads the packed dataset last placed on the wire;
+     * PASSIVE reads the seqlock snapshot (refreshed on every accepted
+     * Announce via bmca_update -> build_local_dataset in ptp_rx_task). */
+    if (i_am_master)
+    {
+        uint32_t packed = atomic_load(&g_local_ds_packed);
+        if (packed == 0)
+        {
+            off = web_append(buf, cap, off, "\"local\":null,");
+        }
+        else
+        {
+            off = web_append(buf, cap, off,
+                "\"local\":{\"priority1\":%u,\"clock_class\":%u,\"accuracy\":%u,"
+                "\"variance\":65535,\"priority2\":%u},",
+                (unsigned)((packed >> 16) & 0xFF), (unsigned)(packed & 0xFF),
+                (unsigned)((packed >> 8) & 0xFF), (unsigned)((packed >> 24) & 0xFF));
+        }
+    }
+    else if (v->local_valid)
+    {
+        off = web_append(buf, cap, off,
+            "\"local\":{\"priority1\":%u,\"clock_class\":%u,\"accuracy\":%u,"
+            "\"variance\":%u,\"priority2\":%u},",
+            v->local.priority1, v->local.clock_class, v->local.accuracy,
+            v->local.variance, v->local.priority2);
+    }
+    else
+    {
+        off = web_append(buf, cap, off, "\"local\":null,");
+    }
+
+    /* peer + peer_better */
+    if (v->peer_valid)
+    {
+        char peer_str[24];
+        snprintf(peer_str, sizeof(peer_str), "%02X%02X %02X%02X %02X%02X %02X%02X",
+                 v->peer.clock_id[0], v->peer.clock_id[1], v->peer.clock_id[2], v->peer.clock_id[3],
+                 v->peer.clock_id[4], v->peer.clock_id[5], v->peer.clock_id[6], v->peer.clock_id[7]);
+        off = web_append(buf, cap, off,
+            "\"peer\":{\"clock_id\":\"%s\",\"priority1\":%u,\"clock_class\":%u,"
+            "\"accuracy\":%u,\"variance\":%u,\"priority2\":%u,\"steps_removed\":%u},"
+            "\"peer_better\":%s,",
+            peer_str, v->peer.priority1, v->peer.clock_class, v->peer.accuracy,
+            v->peer.variance, v->peer.priority2, v->peer.steps_removed,
+            v->peer_better ? "true" : "false");
+    }
+    else
+    {
+        off = web_append(buf, cap, off, "\"peer\":null,\"peer_better\":null,");
+    }
+
+    const char *decided = bmca_field_str(v->decided_by);
+    off = decided ? web_append(buf, cap, off, "\"decided_by\":\"%s\",", decided)
+                 : web_append(buf, cap, off, "\"decided_by\":null,");
+
+    if (v->cand_valid)
+    {
+        char cand_str[24];
+        snprintf(cand_str, sizeof(cand_str), "%02X%02X %02X%02X %02X%02X %02X%02X",
+                 v->cand_id[0], v->cand_id[1], v->cand_id[2], v->cand_id[3],
+                 v->cand_id[4], v->cand_id[5], v->cand_id[6], v->cand_id[7]);
+        off = web_append(buf, cap, off, "\"candidate\":{\"clock_id\":\"%s\",\"count\":%u},",
+                         cand_str, (unsigned)v->cand_count);
+    }
+    else
+    {
+        off = web_append(buf, cap, off, "\"candidate\":null,");
+    }
+
+    if (v->last_ann_rx_ms > 0)
+        off = web_append(buf, cap, off, "\"last_announce_rx_age_ms\":%lld,",
+                         (long long)(uptime_ms - v->last_ann_rx_ms));
+    else
+        off = web_append(buf, cap, off, "\"last_announce_rx_age_ms\":null,");
+
+    off = web_append(buf, cap, off, "\"role_changes\":%" PRIu32 ",\"events\":[",
+                     v->role_changes);
+
+    /* events[]: ring holds up to BMCA_EVENT_RING entries, oldest overwritten
+     * first; ev_next is the slot the NEXT write will use, so ev_next-1 is
+     * the newest entry. Walk backwards for newest-first order. */
+    bool first = true;
+    for (uint8_t k = 0; k < v->ev_count; k++)
+    {
+        int idx = ((int)v->ev_next - 1 - (int)k + BMCA_EVENT_RING) % BMCA_EVENT_RING;
+        const bmca_event_t *e = &v->ev[idx];
+        const char *reason = bmca_reason_str(e->reason);
+        const char *field = bmca_field_str(e->decided_by);
+
+        off = web_append(buf, cap, off, "%s{\"t_ms\":%lld,\"to\":\"%s\",\"reason\":\"%s\",",
+                         first ? "" : ",", (long long)e->t_ms,
+                         e->to_master ? "MASTER" : "PASSIVE", reason ? reason : "?");
+        if (e->peer_valid)
+            off = web_append(buf, cap, off, "\"peer\":\"%02X%02X %02X%02X %02X%02X %02X%02X\",",
+                             e->peer_id[0], e->peer_id[1], e->peer_id[2], e->peer_id[3],
+                             e->peer_id[4], e->peer_id[5], e->peer_id[6], e->peer_id[7]);
+        else
+            off = web_append(buf, cap, off, "\"peer\":null,");
+        off = field ? web_append(buf, cap, off, "\"decided_by\":\"%s\"}", field)
+                   : web_append(buf, cap, off, "\"decided_by\":null}");
+        first = false;
+    }
+
+    off = web_append(buf, cap, off, "]}");
+    return off;
+}
+
+/* ----------------------------------------------------------------------------
  *  GET /api/status  --  JSON snapshot
  *
  *  Builds the JSON document the front-end expects (see contract in
@@ -176,6 +298,7 @@ static esp_err_t status_handler(httpd_req_t *req)
     bool   link_up      = atomic_load(&g_link_up);
     bool   l2tap_ready  = atomic_load(&g_l2tap_ready);
     led_state_t st      = atomic_load(&s_led_state);
+    bool   i_am_master  = g_i_am_master;
 
     int64_t offset_ns   = g_last_offset;
     double  freq_ppb    = g_freq_ppb;
@@ -185,7 +308,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     time_t  gnss_sec     = g_gnss_seconds;
     time_t  last_gnss_up = g_last_gnss_update;
     int64_t phc_resid   = g_phc_offset_ns;
-    uint8_t lock_qual   = g_lock_qual_count;
+    uint8_t lock_qual   = 0;  /* good samples (within LOCK_QUAL_GOOD_NS) in the quality window, as on the OLED */
+    for (int i = 0; i < LOCK_QUAL_WINDOW; i++)
+        lock_qual += g_lock_qual_ring[i];
     int64_t lock_ms     = g_lock_acquired_ms;
     bool    settled     = g_settled_after_holdover;
     uint16_t sync_seq   = g_sync_seq;
@@ -193,16 +318,35 @@ static esp_err_t status_handler(httpd_req_t *req)
     uint32_t emac_rst   = g_emac_restart_count;
     int      slaves     = slave_active_count();
     uint32_t pps_seq    = g_pps_capture_seq;     /* real PPS edge count */
+    uint32_t coast_xtra = g_pps_coast_extra;     /* extra (glitch) PPS edges seen */
+    uint32_t coast_miss = g_pps_coast_missing;   /* missing PPS edges seen */
+    bool     sec_agree  = g_seconds_agree;       /* receiver and PHC agree on the second */
+    int32_t  sec_diff   = g_seconds_diff;        /* receiver second - PHC second (0 = agree) */
+    uint32_t sec_dis_n  = g_seconds_disagree_n;  /* consecutive checks with that difference */
     uint32_t rej_total  = g_total_rejects;       /* lifetime servo rejects */
     uint32_t rej_streak = g_consecutive_rejects; /* live reject streak */
+    bool     promisc    = g_promiscuous;
 
     int64_t  now_ms     = esp_timer_get_time() / 1000;
-    int64_t  uptime_s   = (now_ms - g_boot_time_ms) / 1000;
+    int64_t  uptime_ms  = now_ms - g_boot_time_ms;
+    int64_t  uptime_s   = uptime_ms / 1000;
+
+    /* BMCA seqlock snapshot, taken once and shared with web_append_bmca. A
+     * failed snapshot (extremely rare — see bmca_view_snapshot) degrades to
+     * "bmca":null rather than failing the whole /api/status response. */
+    bmca_view_t bmca_snap;
+    bool bmca_ok = bmca_view_snapshot(&bmca_snap);
 
     /* Heap stats */
     size_t heap_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_min  = heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL);
     size_t heap_lfb  = heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL);
+
+    /* heap_leak: delta vs. the baseline heap_monitor_task took ~10 s after
+     * boot; null until that baseline exists. */
+    uint32_t heap_baseline = atomic_load(&g_heap_baseline_free);
+    bool     have_leak     = (heap_baseline != 0);
+    int32_t  heap_leak     = have_leak ? (int32_t)heap_free - (int32_t)heap_baseline : 0;
 
     /* ESP32-P4 retention-capable internal SRAM. This reports the live
      * capability heap, rather than a build-specific address copied from the
@@ -214,6 +358,21 @@ static esp_err_t status_handler(httpd_req_t *req)
     size_t retent_total = 0;
     size_t retent_free  = 0;
 #endif
+
+    /* Watchdog health */
+    uint8_t  wdt_state  = atomic_load(&g_wdt_state);
+    uint32_t wdt_alerts = atomic_load(&g_wdt_alerts);
+    uint32_t wdt_last_s = atomic_load(&g_wdt_last_alert_s);
+    const char *wdt_state_str;
+    switch ((wdt_state_t)wdt_state)
+    {
+    case WDT_ARMING:        wdt_state_str = "arming";        break;
+    case WDT_OK:             wdt_state_str = "ok";            break;
+    case WDT_PHC_FROZEN:     wdt_state_str = "phc_frozen";    break;
+    case WDT_HEAP_CRITICAL:  wdt_state_str = "heap_critical"; break;
+    case WDT_RESTART_LIMIT:  wdt_state_str = "restart_limit"; break;
+    default:                 wdt_state_str = "arming";        break;
+    }
 
     /* App info (project name, version, compile time, ELF SHA) */
     const esp_app_desc_t *app = esp_app_get_description();
@@ -234,39 +393,29 @@ static esp_err_t status_handler(httpd_req_t *req)
              g_clock_id[0], g_clock_id[1], g_clock_id[2], g_clock_id[3],
              g_clock_id[4], g_clock_id[5], g_clock_id[6], g_clock_id[7]);
 
-    /* IP address */
+    /* IP address + source ("Static"/"DHCP", null while unassigned) */
     char ip_str[20] = "0.0.0.0";
+    bool have_ip = false;
     if (g_eth_netif)
     {
         esp_netif_ip_info_t ipinfo;
         if (esp_netif_get_ip_info(g_eth_netif, &ipinfo) == ESP_OK && ipinfo.ip.addr != 0)
         {
             snprintf(ip_str, sizeof(ip_str), IPSTR, IP2STR(&ipinfo.ip));
+            have_ip = true;
         }
     }
+    bool static_ip = g_static_applied;
 
-    /* UTC time string from GNSS seconds */
-    char utc_str[12] = "--:--:--";
-    if (gnss_valid && gnss_sec > 1577836800LL)
-    {
-        struct tm tm_utc;
-        time_t t = gnss_sec;
-        gmtime_r(&t, &tm_utc);
-        snprintf(utc_str, sizeof(utc_str), "%02d:%02d:%02d",
-                 tm_utc.tm_hour, tm_utc.tm_min, tm_utc.tm_sec);
-    }
+    /* GNSS UTC epoch seconds (number), null when GNSS time isn't valid */
+    bool have_gnss_utc = gnss_valid && gnss_sec > 1577836800LL;
 
-    /* "Locked for" string (HH:MM:SS) */
-    char locked_for[16] = "00:00:00";
+    /* "Locked for", now a plain second count (0 when not LOCKED) */
+    int64_t locked_for_s = 0;
     if (st == LED_STATE_LOCKED && lock_ms > 0)
     {
-        int64_t held_s = (now_ms - lock_ms) / 1000;
-        if (held_s < 0) held_s = 0;
-        unsigned h = (unsigned)(held_s / 3600);
-        unsigned m = (unsigned)((held_s % 3600) / 60);
-        unsigned s = (unsigned)(held_s % 60);
-        if (h > 999) h = 999; /* clamp to fit buffer */
-        snprintf(locked_for, sizeof(locked_for), "%02u:%02u:%02u", h, m, s);
+        locked_for_s = (now_ms - lock_ms) / 1000;
+        if (locked_for_s < 0) locked_for_s = 0;
     }
 
     /* GNSS age in seconds (clamped to a sane range) */
@@ -290,8 +439,9 @@ static esp_err_t status_handler(httpd_req_t *req)
     }
 
     /* ---------- build JSON ---------- */
-    /* 8 KB is plenty: ~2.5 KB scalars + ~13 tasks * ~120 B = ~4 KB worst case */
-    const size_t BUF_SZ = 8192;
+    /* config (~0.7 KB) + bmca (up to ~1.8 KB with 8 events) push the worst
+     * case well past the old 8 KB. */
+    const size_t BUF_SZ = 12288;
     char *buf = (char *)malloc(BUF_SZ);
     if (!buf)
     {
@@ -321,112 +471,161 @@ static esp_err_t status_handler(httpd_req_t *req)
                  app->date, app->time);
     }
 
-    /* Heap leak delta: we don't track baseline here -- the heap_monitor task
-     * tracks it internally. Report 0 (unknown) and the UI shows "+0 B / ok". */
-
     off = web_append(buf, BUF_SZ, off,
         "{"
         "\"chip\":\"ESP32-P4\","
         "\"chip_rev\":\"v%d.%d\","
-        "\"cpu_mhz\":%d,"
+        "\"cpu_mhz\":%" PRIu32 ","
         "\"project\":\"%s\","
         "\"app_version\":\"%s\","
         "\"idf_version\":\"%s\","
         "\"compile_time\":\"%s\","
         "\"elf_sha\":\"%s\","
-        "\"flash_mb\":16,"
-        "\"flash_mode\":\"DIO\","
-        "\"flash_mhz\":80,"
+        "\"flash_mb\":%" PRIu32 ","
+        "\"flash_mode\":\"%s\","
+        "\"flash_mhz\":%" PRIu32 ","
         "\"uptime_s\":%lld,"
         "\"heap_free\":%u,"
         "\"heap_min\":%u,"
-        "\"heap_lfb\":%u,"
-        "\"heap_leak\":0,"
-        "\"retent_total\":%u,"
-        "\"retent_free\":%u,"
-        "\"ram1_kb\":384,"
-        "\"ram2_kb\":18,"
-        "\"rtc_kb\":31,"
-        "\"tcm_kb\":7,"
-        "\"link_up\":%s,"
-        "\"l2tap_ready\":%s,"
-        "\"ip\":\"%s\","
-        "\"ip_source\":\"DHCP/static\","
-        "\"mac\":\"%s\","
-        "\"hostname\":\"%s\","
-        "\"emac_restarts\":%" PRIu32 ","
-        "\"promiscuous\":false,"
-        "\"wdt_healthy\":true,"
-        "\"role\":\"%s\","
-        "\"clock_id\":\"%s\","
-        "\"utc_time\":\"%s\","
-        "\"tai_offset\":%d,"
-        "\"sync_interval_ms\":1000,"
-        "\"announce_interval_ms\":2000,"
-        "\"sync_seq\":%u,"
-        "\"announce_seq\":%u,"
-        "\"path_delay_ns\":null,"
-        "\"slaves_active\":%d,"
-        "\"slaves_max\":8,"
-        "\"servo_state\":\"%s\","
-        "\"locked_for\":\"%s\","
-        "\"offset_ns\":%lld,"
-        "\"freq_ppb\":%.2f,"
-        "\"integrator\":%.2f,"
-        "\"lock_qual\":%u,"
-        "\"lock_qual_window\":64,"
-        "\"pps_count\":%" PRIu32 ","
-        "\"reject_total\":%" PRIu32 ","
-        "\"reject_streak\":%" PRIu32 ","
-        "\"reject_reacquire_at\":45,"
-        "\"phc_residual_ns\":%lld,"
-        "\"holdover_timeout_s\":5,"
-        "\"settled\":%s,"
-        "\"gnss_age_s\":%ld,"
-        "\"gnss_fix\":%s,"
-        "\"pps_led_active\":%s,"
-        "\"tasks\":[",
+        "\"heap_lfb\":%u,",
         chip.revision / 100, chip.revision % 100,
-        (int)WEB_CPU_MHZ,
+        g_boot_facts.cpu_mhz,
         app ? app->project_name : "PTP_Master",
         app ? app->version      : "unknown",
         app ? app->idf_ver      : esp_get_idf_version(),
         compile_str,
         sha_str,
+        g_boot_facts.flash_bytes / (1024u * 1024u),
+        g_boot_facts.flash_mode,
+        g_boot_facts.flash_mhz,
         (long long)uptime_s,
         (unsigned)heap_free,
         (unsigned)heap_min,
-        (unsigned)heap_lfb,
+        (unsigned)heap_lfb);
+
+    if (have_leak)
+        off = web_append(buf, BUF_SZ, off, "\"heap_leak\":%" PRId32 ",", heap_leak);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"heap_leak\":null,");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"heap_internal_total\":%u,"
+        "\"retent_total\":%u,"
+        "\"retent_free\":%u,",
+        (unsigned)g_boot_facts.heap_internal_total,
         (unsigned)retent_total,
-        (unsigned)retent_free,
+        (unsigned)retent_free);
+
+    if (g_boot_facts.rtc_heap_total >= 0)
+        off = web_append(buf, BUF_SZ, off, "\"rtc_heap_total\":%ld,", g_boot_facts.rtc_heap_total);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"rtc_heap_total\":null,");
+    if (g_boot_facts.tcm_heap_total >= 0)
+        off = web_append(buf, BUF_SZ, off, "\"tcm_heap_total\":%ld,", g_boot_facts.tcm_heap_total);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"tcm_heap_total\":null,");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"link_up\":%s,"
+        "\"l2tap_ready\":%s,"
+        "\"ip\":\"%s\",",
         link_up     ? "true" : "false",
         l2tap_ready ? "true" : "false",
-        ip_str,
+        ip_str);
+
+    if (have_ip)
+        off = web_append(buf, BUF_SZ, off, "\"ip_source\":\"%s\",", static_ip ? "Static" : "DHCP");
+    else
+        off = web_append(buf, BUF_SZ, off, "\"ip_source\":null,");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"mac\":\"%s\","
+        "\"hostname\":\"%s\","
+        "\"emac_restarts\":%" PRIu32 ","
+        "\"promiscuous\":%s,"
+        "\"wdt\":{\"state\":\"%s\",\"alerts\":%" PRIu32 ",",
         mac_str,
         g_hostname[0] ? g_hostname : "",
         emac_rst,
-        g_i_am_master ? "MASTER" : "SLAVE",
-        clk_str,
-        utc_str,
+        promisc ? "true" : "false",
+        wdt_state_str, wdt_alerts);
+
+    if (wdt_last_s > 0)
+        off = web_append(buf, BUF_SZ, off, "\"last_alert_uptime_s\":%" PRIu32 "},", wdt_last_s);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"last_alert_uptime_s\":null},");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"role\":\"%s\","
+        "\"clock_id\":\"%s\",",
+        i_am_master ? "MASTER" : "PASSIVE",
+        clk_str);
+
+    if (have_gnss_utc)
+        off = web_append(buf, BUF_SZ, off, "\"gnss_utc_s\":%lld,", (long long)gnss_sec);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"gnss_utc_s\":null,");
+
+    off = web_append(buf, BUF_SZ, off,
+        "\"tai_offset\":%d,"
+        "\"sync_seq\":%u,"
+        "\"announce_seq\":%u,"
+        "\"slaves_active\":%d,"
+        /* servo_gain_set was evaluated (see §4.7 of the BMCA/JSON handover)
+         * and deliberately NOT added: LED-derived servo_state already tells
+         * the dashboard which gain set is active (ACQUIRING => acquire
+         * gains, LOCKED/HOLDOVER => lock gains) without exposing servo_task's
+         * internal state enum. */
+        "\"servo_state\":\"%s\","
+        "\"locked_for_s\":%lld,"
+        "\"offset_ns\":%lld,"
+        "\"freq_ppb\":%.2f,"
+        "\"integrator\":%.2f,"
+        "\"lock_qual\":%u,"
+        "\"pps_count\":%" PRIu32 ","
+        "\"pps_coast_extra\":%" PRIu32 ","
+        "\"pps_coast_missing\":%" PRIu32 ","
+        "\"reject_total\":%" PRIu32 ","
+        "\"reject_streak\":%" PRIu32 ","
+        "\"phc_residual_ns\":%lld,"
+        "\"sec_agree\":%s,"
+        "\"sec_diff\":%ld,"
+        "\"sec_disagree_n\":%" PRIu32 ","
+        "\"settled\":%s,"
+        "\"gnss_age_s\":%ld,"
+        "\"gnss_fix\":%s,",
         tai_off,
         (unsigned)sync_seq,
         (unsigned)ann_seq,
         slaves,
         web_state_str(st),
-        locked_for,
+        (long long)locked_for_s,
         (long long)offset_ns,
         freq_ppb,
         integ,
         (unsigned)lock_qual,
         pps_seq,
+        coast_xtra,
+        coast_miss,
         rej_total,
         rej_streak,
         (long long)phc_resid,
+        sec_agree ? "true" : "false",
+        (long)sec_diff,
+        sec_dis_n,
         settled ? "true" : "false",
         gnss_age,
-        gnss_fix ? "true" : "false",
-        (st == LED_STATE_LOCKED) ? "true" : "false"
-    );
+        gnss_fix ? "true" : "false");
+
+    if (bmca_ok)
+        off = web_append_bmca(buf, BUF_SZ, off, i_am_master, uptime_ms, &bmca_snap);
+    else
+        off = web_append(buf, BUF_SZ, off, "\"bmca\":null");
+    off = web_append(buf, BUF_SZ, off, ",");
+
+    off = web_append(buf, BUF_SZ, off, "%s,", g_config_json);
+
+    off = web_append(buf, BUF_SZ, off, "\"tasks\":[");
 
     /* Append task array */
     bool first = true;
@@ -435,38 +634,21 @@ static esp_err_t status_handler(httpd_req_t *req)
         const TaskStatus_t *t = &tarr[i];
         /* high-water mark is reported in StackType_t units; convert to bytes */
         uint32_t hwm_bytes = (uint32_t)t->usStackHighWaterMark * sizeof(StackType_t);
-
-        /* We don't have the original stack size from TaskStatus_t. Map the
-         * known tasks to their configured stack size; everything else gets
-         * the FreeRTOS default. */
-        uint32_t stack_bytes = 0;
         const char *name = t->pcTaskName ? t->pcTaskName : "?";
-        if      (!strcmp(name, "ptp_rx"))   stack_bytes = 8192;
-        else if (!strcmp(name, "ptp_tx"))   stack_bytes = 8192;
-        else if (!strcmp(name, "gnss"))      stack_bytes = 6144;
-        else if (!strcmp(name, "servo"))    stack_bytes = 6144;
-        else if (!strcmp(name, "pps_task")) stack_bytes = 4096;
-        else if (!strcmp(name, "pps_led"))  stack_bytes = 2048;
-        else if (!strcmp(name, "led"))      stack_bytes = 2048;
-        else if (!strcmp(name, "display"))  stack_bytes = 4096;
-        else if (!strcmp(name, "btn"))      stack_bytes = 2048;
-        else if (!strcmp(name, "dhcp_fb"))  stack_bytes = 3072;
-        else if (!strcmp(name, "heap_mon")) stack_bytes = 3072;
-        else if (!strcmp(name, "wdt"))      stack_bytes = 4096;
-        else if (!strcmp(name, "main"))     stack_bytes = 4096;
-        else stack_bytes = hwm_bytes + 1024; /* best effort */
+        long stack_bytes = task_reg_lookup(name); /* -1 => unknown => JSON null */
 
         int core = web_task_core(t->xHandle);
 
         off = web_append(buf, BUF_SZ, off,
-            "%s{\"name\":\"%s\",\"priority\":%u,\"stack_bytes\":%" PRIu32
+            "%s{\"name\":\"%s\",\"priority\":%u,\"stack_bytes\":",
+            first ? "" : ",", name, (unsigned)t->uxCurrentPriority);
+        if (stack_bytes >= 0)
+            off = web_append(buf, BUF_SZ, off, "%ld", stack_bytes);
+        else
+            off = web_append(buf, BUF_SZ, off, "null");
+        off = web_append(buf, BUF_SZ, off,
             ",\"hwm_bytes\":%" PRIu32 ",\"core\":%d}",
-            first ? "" : ",",
-            name,
-            (unsigned)t->uxCurrentPriority,
-            stack_bytes,
-            hwm_bytes,
-            core);
+            hwm_bytes, core);
         first = false;
     }
 
@@ -474,11 +656,150 @@ static esp_err_t status_handler(httpd_req_t *req)
 
     free(tarr);
 
+    /* web_append() saturates `off` at BUF_SZ-1 on truncation. Never send a
+     * truncated (invalid) JSON document. */
+    if (off >= BUF_SZ - 2)
+    {
+        free(buf);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Cache-Control", "no-cache, no-store, must-revalidate");
     esp_err_t r = httpd_resp_send(req, buf, off);
     free(buf);
     return r;
+}
+
+/* ----------------------------------------------------------------------------
+ *  GET /api/bmca  --  standalone BMCA snapshot
+ *
+ *  Lets the dashboard's BMCA card poll at 1 Hz without the task-table walk
+ *  /api/status does. Same seqlock, same web_append_bmca() fragment as
+ *  /api/status, so the two endpoints can never disagree.
+ * --------------------------------------------------------------------------- */
+static esp_err_t bmca_handler(httpd_req_t *req)
+{
+    bool i_am_master = g_i_am_master;
+    int64_t uptime_ms = esp_timer_get_time() / 1000 - g_boot_time_ms;
+
+    bmca_view_t v;
+    if (!bmca_view_snapshot(&v))
+    {
+        /* Never emit a torn object. */
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    char clk_str[24];
+    snprintf(clk_str, sizeof(clk_str), "%02X%02X %02X%02X %02X%02X %02X%02X",
+             g_clock_id[0], g_clock_id[1], g_clock_id[2], g_clock_id[3],
+             g_clock_id[4], g_clock_id[5], g_clock_id[6], g_clock_id[7]);
+
+    const size_t BUF_SZ = 2048;
+    char *buf = (char *)malloc(BUF_SZ);
+    if (!buf)
+    {
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+    size_t off = 0;
+
+    off = web_append(buf, BUF_SZ, off,
+        "{\"uptime_ms\":%lld,\"role\":\"%s\",\"clock_id\":\"%s\",",
+        (long long)uptime_ms, i_am_master ? "MASTER" : "PASSIVE", clk_str);
+    off = web_append_bmca(buf, BUF_SZ, off, i_am_master, uptime_ms, &v);
+    off = web_append(buf, BUF_SZ, off, "}");
+
+    if (off >= BUF_SZ - 2)
+    {
+        free(buf);
+        httpd_resp_send_500(req);
+        return ESP_FAIL;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Cache-Control", "no-cache");
+    esp_err_t r = httpd_resp_send(req, buf, off);
+    free(buf);
+    return r;
+}
+
+/* ----------------------------------------------------------------------------
+ *  POST /api/bmca/priority?p1=N&p2=M  --  runtime priority1/priority2
+ *
+ *  Same credentials as OTA (ota_check_basic_auth). RAM-only: a reboot
+ *  restores PTP_PRIORITY1_DEFAULT/PTP_PRIORITY2_DEFAULT (see g_priority1/
+ *  g_priority2 in main.c) — no NVS write, by design.
+ * --------------------------------------------------------------------------- */
+static esp_err_t bmca_priority_handler(httpd_req_t *req)
+{
+    if (ota_check_basic_auth(req) != ESP_OK)
+        return ESP_FAIL; /* helper already sent 401/503 */
+
+    /* No request body is expected; drain one if present so the connection
+     * can be reused cleanly. */
+    int remaining = req->content_len;
+    char drain[64];
+    while (remaining > 0)
+    {
+        int chunk = remaining < (int)sizeof(drain) ? remaining : (int)sizeof(drain);
+        int r = httpd_req_recv(req, drain, chunk);
+        if (r <= 0)
+            break;
+        remaining -= r;
+    }
+
+    char query[64] = {0};
+    bool have_p1 = false, have_p2 = false;
+    long p1 = 0, p2 = 0;
+
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK)
+    {
+        char val[8];
+        if (httpd_query_key_value(query, "p1", val, sizeof(val)) == ESP_OK)
+        {
+            char *end = NULL;
+            long v = strtol(val, &end, 10);
+            if (end == val || *end != '\0' || v < 0 || v > 255)
+            {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "p1 must be an integer 0-255");
+                return ESP_FAIL;
+            }
+            p1 = v;
+            have_p1 = true;
+        }
+        if (httpd_query_key_value(query, "p2", val, sizeof(val)) == ESP_OK)
+        {
+            char *end = NULL;
+            long v = strtol(val, &end, 10);
+            if (end == val || *end != '\0' || v < 0 || v > 255)
+            {
+                httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "p2 must be an integer 0-255");
+                return ESP_FAIL;
+            }
+            p2 = v;
+            have_p2 = true;
+        }
+    }
+
+    if (!have_p1 && !have_p2)
+    {
+        httpd_resp_send_err(req, HTTPD_400_BAD_REQUEST, "specify p1 and/or p2 (0-255)");
+        return ESP_FAIL;
+    }
+
+    /* Takes effect on the next Announce sent and the next Announce
+     * received — no forced BMCA re-evaluation needed. */
+    if (have_p1) atomic_store(&g_priority1, (uint8_t)p1);
+    if (have_p2) atomic_store(&g_priority2, (uint8_t)p2);
+
+    char resp[64];
+    int n = snprintf(resp, sizeof(resp), "{\"priority1\":%u,\"priority2\":%u}",
+                     (unsigned)atomic_load(&g_priority1), (unsigned)atomic_load(&g_priority2));
+    httpd_resp_set_type(req, "application/json");
+    return httpd_resp_send(req, resp, n);
 }
 
 /* ----------------------------------------------------------------------------
@@ -642,6 +963,55 @@ static esp_err_t ota_page_handler(httpd_req_t *req)
 }
 
 /* ----------------------------------------------------------------------------
+ *  POST /api/reboot  --  restart the device
+ *
+ *  Same credentials as OTA (ota_check_basic_auth). Answers first, then
+ *  restarts from a small task after 1 s (as an OTA update does), so the client
+ *  gets the reply. Refused with 409 while an OTA upload is in progress.
+ * --------------------------------------------------------------------------- */
+static void web_reboot_task(void *arg)
+{
+    (void)arg;
+    ESP_LOGW(WEB_TAG, "Rebooting in 1 second (requested via /api/reboot)...");
+    vTaskDelay(pdMS_TO_TICKS(1000));
+    esp_restart();
+}
+
+static esp_err_t reboot_handler(httpd_req_t *req)
+{
+    if (ota_check_basic_auth(req) != ESP_OK)
+        return ESP_FAIL; /* helper already sent 401/503 */
+
+    /* No request body is expected; drain one if present. */
+    int remaining = req->content_len;
+    char drain[64];
+    while (remaining > 0)
+    {
+        int chunk = remaining < (int)sizeof(drain) ? remaining : (int)sizeof(drain);
+        int r = httpd_req_recv(req, drain, chunk);
+        if (r <= 0)
+            break;
+        remaining -= r;
+    }
+
+    httpd_resp_set_type(req, "application/json");
+    if (atomic_load(&g_ota_in_progress))
+    {
+        httpd_resp_set_status(req, "409 Conflict");
+        httpd_resp_sendstr(req, "{\"error\":\"OTA update in progress\"}");
+        return ESP_OK;
+    }
+    httpd_resp_sendstr(req, "{\"rebooting\":true,\"in_ms\":1000}");
+    if (xTaskCreate(web_reboot_task, "web_reboot", 2048, NULL, 5, NULL) != pdPASS)
+    {
+        /* No memory for a 2 KB task: the client was promised a reboot. */
+        vTaskDelay(pdMS_TO_TICKS(200));
+        esp_restart();
+    }
+    return ESP_OK;
+}
+
+/* ----------------------------------------------------------------------------
  *  web_server_start()  --  start the httpd
  *
  *  Safe to call any time after esp_netif_init() and esp_event_loop_create()
@@ -663,11 +1033,17 @@ static httpd_handle_t web_server_start(void)
     config.server_port      = 80;
     config.ctrl_port        = 32768;        /* default; explicit for clarity */
     config.max_open_sockets = 4;            /* page + a few XHRs */
-    config.max_uri_handlers = 8;            /* room for OTA routes */
+    config.max_uri_handlers = 10;           /* OTA routes + /api/bmca + /api/bmca/priority + /api/reboot (9 used) */
     config.stack_size       = 8192;         /* OTA needs slightly more stack */
     config.lru_purge_enable = true;
     config.recv_wait_timeout = 30;          /* OTA: large uploads can pause */
     config.send_wait_timeout = 10;
+
+    /* The httpd task itself never goes through task_create_tracked() (IDF
+     * creates it internally); register its stack size directly so the
+     * dashboard's task table shows a real stack_bytes instead of null. The
+     * task name is "httpd" (esp_http_server's httpd_os_thread_create). */
+    task_reg_add("httpd", config.stack_size);
 
     ESP_LOGI(WEB_TAG, "Starting HTTP server on port %d", config.server_port);
     esp_err_t err = httpd_start(&server, &config);
@@ -713,6 +1089,24 @@ static httpd_handle_t web_server_start(void)
         .handler  = ota_upload_handler,
         .user_ctx = NULL,
     };
+    static const httpd_uri_t uri_bmca = {
+        .uri      = "/api/bmca",
+        .method   = HTTP_GET,
+        .handler  = bmca_handler,
+        .user_ctx = NULL,
+    };
+    static const httpd_uri_t uri_bmca_priority = {
+        .uri      = "/api/bmca/priority",
+        .method   = HTTP_POST,
+        .handler  = bmca_priority_handler,
+        .user_ctx = NULL,
+    };
+    static const httpd_uri_t uri_reboot = {
+        .uri      = "/api/reboot",
+        .method   = HTTP_POST,
+        .handler  = reboot_handler,
+        .user_ctx = NULL,
+    };
 
     httpd_register_uri_handler(server, &uri_root);
     httpd_register_uri_handler(server, &uri_status);
@@ -720,11 +1114,17 @@ static httpd_handle_t web_server_start(void)
     httpd_register_uri_handler(server, &uri_ota_page);
     httpd_register_uri_handler(server, &uri_ota_info);
     httpd_register_uri_handler(server, &uri_ota_upload);
+    httpd_register_uri_handler(server, &uri_bmca);
+    httpd_register_uri_handler(server, &uri_bmca_priority);
+    httpd_register_uri_handler(server, &uri_reboot);
 
     ESP_LOGI(WEB_TAG, "HTTP server ready -- open http://<device-ip>/ in a browser");
     ESP_LOGI(WEB_TAG, "  GET  /            -> status page");
+    ESP_LOGI(WEB_TAG, "  POST /api/reboot  -> restart (OTA credentials)");
     ESP_LOGI(WEB_TAG, "  GET  /api/status  -> status JSON");
     ESP_LOGI(WEB_TAG, "  GET  /api/health  -> load/soak health JSON (heap/cpu/stack/jitter)");
+    ESP_LOGI(WEB_TAG, "  GET  /api/bmca    -> BMCA snapshot JSON (1 Hz poll)");
+    ESP_LOGI(WEB_TAG, "  POST /api/bmca/priority -> set priority1/priority2 (OTA auth)");
     ESP_LOGI(WEB_TAG, "  GET  /ota         -> OTA upload page");
     ESP_LOGI(WEB_TAG, "  GET  /api/ota/info-> OTA partition info JSON");
     ESP_LOGI(WEB_TAG, "  POST /api/ota     -> firmware image upload");

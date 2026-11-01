@@ -57,6 +57,8 @@
   .status-pill.warn .dot { background:var(--warn); box-shadow:0 0 8px var(--warn); }
   .status-pill.err { background:rgba(255,85,119,0.08); border-color:rgba(255,85,119,0.3); color:var(--err); }
   .status-pill.err .dot { background:var(--err); box-shadow:0 0 8px var(--err); }
+  .status-pill.info { background:rgba(139,233,253,0.08); border-color:rgba(139,233,253,0.3); color:var(--info); }
+  .status-pill.info .dot { background:var(--info); box-shadow:0 0 8px var(--info); }
   .status-pill .dot { width:8px; height:8px; border-radius:50%; background:var(--ok);
                       box-shadow:0 0 8px var(--ok); animation:pulse 2s ease-in-out infinite; }
   @keyframes pulse { 0%,100%{opacity:1;transform:scale(1);} 50%{opacity:0.5;transform:scale(0.85);} }
@@ -151,6 +153,30 @@
              background:linear-gradient(90deg,var(--accent),var(--accent-2));
              border-radius:99px; transition:width 0.5s ease; }
 
+  /* BMCA card */
+  .bmca-solo { text-align:center; padding:24px 12px; font-family:var(--mono);
+               font-size:13px; color:var(--text-dim); letter-spacing:0.3px; }
+  .bmca-grid { width:100%; border-collapse:collapse; font-size:12.5px; font-family:var(--mono); margin-bottom:16px; }
+  .bmca-grid th { text-align:left; padding:6px 10px; border-bottom:1px solid var(--line);
+                  color:var(--text-dim); font-weight:600; font-size:10px; letter-spacing:1.5px; text-transform:uppercase; }
+  .bmca-grid td { padding:6px 10px; border-bottom:1px solid var(--line-soft); color:var(--text); }
+  .bmca-grid tr.decided td { background:rgba(255,184,108,0.08); }
+  .bmca-grid td.win { color:var(--ok); font-weight:700; }
+  .bmca-strip { display:grid; grid-template-columns:repeat(3,1fr); gap:14px; margin-bottom:16px; }
+  @media (max-width:960px){ .bmca-strip{grid-template-columns:1fr;} }
+  .bmca-tile { background:var(--bg-0); border:1px solid var(--line-soft); border-radius:10px; padding:12px 14px; }
+  .bmca-tile .t { font-size:10px; letter-spacing:1.5px; text-transform:uppercase; color:var(--text-dim); font-weight:700; margin-bottom:6px; }
+  .bmca-tile .v { font-family:var(--mono); font-size:14px; color:var(--text); }
+  .bmca-tile .h { font-family:var(--mono); font-size:10.5px; color:var(--text-mute); margin-top:4px; }
+  .bmca-dots { letter-spacing:2px; color:var(--text-mute); }
+  .bmca-dots .on { color:var(--accent); }
+  .bmca-events { display:flex; flex-direction:column; gap:4px; font-family:var(--mono); font-size:11.5px; max-height:220px; overflow-y:auto; }
+  .bmca-events .ev { padding:6px 10px; border-radius:6px; background:var(--bg-0); border:1px solid var(--line-soft);
+                      display:flex; gap:10px; flex-wrap:wrap; color:var(--text-dim); }
+  .bmca-events .ev .to-master { color:var(--ok); font-weight:700; }
+  .bmca-events .ev .to-passive { color:var(--warn); font-weight:700; }
+  .bmca-empty { color:var(--text-mute); font-family:var(--mono); font-size:11.5px; padding:10px; }
+
   footer { margin-top:32px; padding-top:16px; border-top:1px solid var(--line-soft);
            text-align:center; font-family:var(--mono); font-size:10.5px;
            color:var(--text-mute); letter-spacing:1px; }
@@ -220,7 +246,7 @@
       <div class="mark">P4</div>
       <div>
         <h1>PTP Master &mdash; ESP32-P4 Grandmaster</h1>
-        <div class="sub">IEEE 1588-2008 &middot; L2/Ethernet Transport &middot; Domain 0
+        <div class="sub">IEEE 1588-2008 &middot; L2/Ethernet Transport &middot; <span id="hdr_domain">Domain 0</span>
           &middot; <span class="fw-ver" id="hdr_fw">fw &mdash;</span></div>
       </div>
     </div>
@@ -308,13 +334,13 @@
           <span class="label">Retention-capable RAM<span class="hint">MALLOC_CAP_RETENTION &middot; free / total</span></span>
           <span class="value dim" id="v_retent">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4D0;</span>
-          <span class="label">RAM regions</span>
+          <span class="label">Internal heap total<span class="hint">heap-managed &middot; MALLOC_CAP_INTERNAL</span></span>
           <span class="value dim" id="v_ram">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F50B;</span>
-          <span class="label">RTC RAM</span>
+          <span class="label">RTC heap<span class="hint">heap-managed</span></span>
           <span class="value dim" id="v_rtcram">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4BD;</span>
-          <span class="label">TCM</span>
+          <span class="label">TCM<span class="hint">heap-managed</span></span>
           <span class="value dim" id="v_tcm">&mdash;</span></div>
         <div class="row"><span class="icon">&#x267B;&#xFE0F;</span>
           <span class="label">Leak delta<span class="hint">since baseline</span></span>
@@ -351,17 +377,17 @@
           <span class="label">Promiscuous</span>
           <span class="value dim" id="v_promisc">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F6E1;&#xFE0F;</span>
-          <span class="label">Watchdog<span class="hint">heap pressure recovery</span></span>
+          <span class="label">Watchdog<span class="hint" id="v_wdt_hint">heap pressure recovery</span></span>
           <span class="value ok" id="v_wdt">&mdash;</span></div>
       </div>
     </div>
 
     <!-- PTP / TIMING -->
     <div class="card col-6">
-      <div class="card-header"><h2>PTP &middot; Timing</h2><span class="badge">grandmaster &middot; 2-step</span></div>
+      <div class="card-header"><h2>PTP &middot; Timing</h2><span class="badge" id="b_ptp">grandmaster &middot; 2-step</span></div>
       <div class="rows">
         <div class="row"><span class="icon">&#x1F451;</span>
-          <span class="label">Role<span class="hint">BMCA result</span></span>
+          <span class="label">Role<span class="hint" id="v_role_hint">BMCA result</span></span>
           <span class="value accent" id="v_role">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F194;</span>
           <span class="label">Clock ID</span>
@@ -381,9 +407,6 @@
         <div class="row"><span class="icon">&#x1F522;</span>
           <span class="label">Sync seq &middot; Announce seq</span>
           <span class="value" id="v_seq">&mdash;</span></div>
-        <div class="row"><span class="icon">&#x1F4CD;</span>
-          <span class="label">Path delay<span class="hint">slave-side measurement</span></span>
-          <span class="value dim" id="v_path">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F465;</span>
           <span class="label">Active slaves<span class="hint">tracked &middot; 30s window</span></span>
           <span class="value purple" id="v_slaves">&mdash;</span></div>
@@ -392,7 +415,7 @@
 
     <!-- SERVO -->
     <div class="card col-6">
-      <div class="card-header"><h2>Servo &middot; Discipline</h2><span class="badge">PI &middot; linreg window 16</span></div>
+      <div class="card-header"><h2>Servo &middot; Discipline</h2><span class="badge" id="b_servo">PI &middot; avg window 32</span></div>
       <div class="rows">
         <div class="row"><span class="icon">&#x1F7E2;</span>
           <span class="label">Servo state</span>
@@ -409,6 +432,9 @@
         <div class="row"><span class="icon">&#x1F6AB;</span>
           <span class="label">Sample rejects<span class="hint">offset &gt;100&micro;s from avg &middot; lifetime</span></span>
           <span class="value ok" id="v_reject">&mdash;</span></div>
+        <div class="row"><span class="icon">&#x1F9F9;</span>
+          <span class="label">PPS glitches absorbed<span class="hint">no-fix coasting &middot; extra / missing edges &middot; lifetime</span></span>
+          <span class="value ok" id="v_ppsglitch">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F50D;</span>
           <span class="label">PHC residual<span class="hint">measured steady-state</span></span>
           <span class="value dim" id="v_phc">&mdash;</span></div>
@@ -422,9 +448,15 @@
           <span class="label">GNSS last update</span>
           <span class="value" id="v_gnssage">&mdash;</span></div>
         <div class="row"><span class="icon">&#x1F4A1;</span>
-          <span class="label">PPS LED<span class="hint">GPIO 3 &middot; 50 ms pulse</span></span>
+          <span class="label">PPS LED<span class="hint" id="v_ppsled_hint">&mdash;</span></span>
           <span class="value info" id="v_ppsled">&mdash;</span></div>
       </div>
+    </div>
+
+    <!-- BMCA -->
+    <div class="card col-12">
+      <div class="card-header"><h2>BMCA &middot; Best Master</h2><span class="badge" id="b_bmca">&mdash;</span></div>
+      <div id="bmcaBody"><div class="bmca-empty">awaiting data&hellip;</div></div>
     </div>
 
     <!-- TASKS -->
@@ -499,16 +531,19 @@ const TASK_META = {
   "ptp_rx":   { icon:"\u{1F4E5}", role:"L2TAP RX, hw timestamps, dispatch" },
   "ptp_tx":   { icon:"\u{1F4E4}", role:"Sync / Announce" },
   "dresp":    { icon:"\u{1F4EC}", role:"Delay_Resp worker" },
-  "gnss":      { icon:"\u{1F6F0}\uFE0F", role:"NMEA parser \u00B7 UART1 @ 9600" },
+  "gnss":      { icon:"\u{1F6F0}\uFE0F", role:"NMEA parser \u00B7 UART1 @ 115200" },
+  "gnss_sig": { icon:"\u{1F4E1}", role:"GNSS signal monitor" },
   "servo":    { icon:"\u2699\uFE0F", role:"PI servo, freq/step discipline" },
   "pps_task": { icon:"\u{1F551}", role:"1-PPS edge handler, PHC capture" },
   "pps_led":  { icon:"\u{1F4A1}", role:"PPS visual indicator (GPIO 3)" },
   "led":      { icon:"\u{1F506}", role:"Status LED state machine" },
-  "display":  { icon:"\u{1F4FA}", role:"SH1106 OLED \u00B7 3 screens" },
+  "display":  { icon:"\u{1F4FA}", role:"SH1106 OLED \u00B7 5 screens" },
   "btn":      { icon:"\u{1F518}", role:"Display button \u00B7 GPIO 1" },
-  "dhcp_fb":  { icon:"\u{1F310}", role:"DHCP fallback \u00B7 8 s timeout" },
+  "dhcp_fb":  { icon:"\u{1F310}", role:"DHCP fallback \u00B7 30 s timeout" },
   "heap_mon": { icon:"\u{1F4CA}", role:"Heap watchdog \u00B7 60 s interval" },
   "wdt":      { icon:"\u{1F415}", role:"Watchdog \u00B7 EMAC restart logic" },
+  "bmca_log": { icon:"\u{1F451}", role:"BMCA role-change logging" },
+  "httpd":    { icon:"\u{1F310}", role:"HTTP server (this page)" },
   "main":     { icon:"\u{1F3E1}", role:"Init & supervision (idle)" }
 };
 
@@ -548,17 +583,191 @@ function prioClass(p) {
   return "prio p1";
 }
 
+function shortId(id) {
+  if (!id) return "\u2014";
+  const p = id.split(" ");
+  return ".." + p.slice(-2).join(" ");
+}
+
+/* config never changes at runtime — apply these labels once, on the
+   first successful /api/status response. */
+let configApplied = false;
+let lastConfig = null;
+
+function applyConfigLabels(cfg) {
+  if (configApplied || !cfg) return;
+  configApplied = true;
+
+  setText("v_offset_sub", "avg window: " + cfg.servo.avg_window);
+  setText("b_servo", "PI \u00B7 avg window " + cfg.servo.avg_window);
+  setText("b_ptp", "grandmaster \u00B7 " + (cfg.ptp.two_step ? "2-step" : "1-step"));
+  setText("hdr_domain", "Domain " + cfg.ptp.domain);
+  setText("v_ppsled_hint", "GPIO " + cfg.hw.pps_led_gpio + " \u00B7 " + cfg.hw.pps_led_on_ms + " ms pulse");
+
+  const patch = (name, role) => { if (TASK_META[name]) TASK_META[name].role = role; };
+  patch("gnss", "NMEA parser \u00B7 UART" + cfg.hw.gnss_uart + " @ " + cfg.hw.gnss_baud);
+  patch("display", "SH1106 OLED \u00B7 " + cfg.hw.display_screens + " screens");
+  patch("btn", "Display button \u00B7 GPIO " + cfg.hw.button_gpio);
+  patch("dhcp_fb", "DHCP fallback \u00B7 " + (cfg.net.dhcp_fallback_timeout_ms/1000) + " s timeout");
+  patch("heap_mon", "Heap watchdog \u00B7 " + (cfg.mon.heap_mon_interval_ms/1000) + " s interval");
+}
+
+/* ─── BMCA card ─── */
+function renderBmcaCard(bmca, uptimeMs, roleUp, cfg) {
+  if (!bmca) {
+    setText("b_bmca", "\u2014");
+    $("bmcaBody").innerHTML = '<div class="bmca-empty">awaiting data\u2026</div>';
+    return;
+  }
+
+  const annTimeoutS = (cfg && cfg.ptp) ? cfg.ptp.announce_timeout_s : null;
+  const annIntMs = (cfg && cfg.ptp) ? cfg.ptp.announce_interval_ms : null;
+  const stabilityThresh = (cfg && cfg.ptp) ? cfg.ptp.bmca_stability_threshold : 3;
+  const ageMs = bmca.last_announce_rx_age_ms;
+
+  let badgeText = "\u2014", badgeClass = "badge";
+  if (roleUp === "MASTER") {
+    if (!bmca.peer) { badgeText = "sole master"; badgeClass = "chip ok"; }
+    else if (!bmca.peer_better) { badgeText = "master \u00B7 peer worse"; badgeClass = "chip ok"; }
+    else { badgeText = "master"; badgeClass = "chip ok"; }
+    if (bmca.candidate && bmca.candidate.count < stabilityThresh &&
+        annIntMs != null && ageMs != null && ageMs < 2 * annIntMs) {
+      badgeText = "contested " + bmca.candidate.count + "/" + stabilityThresh;
+      badgeClass = "chip warn";
+    }
+  } else if (roleUp === "PASSIVE") {
+    badgeText = "passive \u00B7 hot standby"; badgeClass = "chip info";
+    if (annTimeoutS != null && ageMs != null && ageMs >= 0.9 * annTimeoutS * 1000) {
+      badgeText = "reclaiming"; badgeClass = "chip err";
+    }
+  }
+  setClass("b_bmca", badgeClass);
+  setText("b_bmca", badgeText);
+
+  let html;
+  if (!bmca.peer) {
+    html = '<div class="bmca-solo">Sole master \u2014 no other grandmaster heard</div>';
+  } else {
+    const decided = bmca.decided_by;
+    const rows = [
+      { key:"priority1",   label:"priority1",   a:bmca.local?bmca.local.priority1:null,   b:bmca.peer.priority1 },
+      { key:"clock_class", label:"clockClass",  a:bmca.local?bmca.local.clock_class:null, b:bmca.peer.clock_class },
+      { key:"accuracy",    label:"accuracy",    a:bmca.local?bmca.local.accuracy:null,    b:bmca.peer.accuracy, hex:true },
+      { key:"variance",    label:"variance",    a:bmca.local?bmca.local.variance:null,    b:bmca.peer.variance, hex:true },
+      { key:"priority2",   label:"priority2",   a:bmca.local?bmca.local.priority2:null,   b:bmca.peer.priority2 },
+    ];
+    let gridRows = rows.map(r => {
+      const isDecided = (r.key === decided);
+      const aFmt = r.a == null ? "\u2014" : (r.hex ? ("0x" + r.a.toString(16).toUpperCase()) : r.a);
+      const bFmt = r.hex ? ("0x" + r.b.toString(16).toUpperCase()) : r.b;
+      const aWin = r.a != null && r.a < r.b;
+      const bWin = r.a != null && r.b < r.a;
+      return '<tr class="' + (isDecided?"decided":"") + '">' +
+             '<td>' + r.label + '</td>' +
+             '<td class="' + (aWin?"win":"") + '">' + aFmt + '</td>' +
+             '<td class="' + (bWin?"win":"") + '">' + bFmt + '</td></tr>';
+    }).join("");
+    gridRows += '<tr class="' + (decided==="clock_identity"?"decided":"") + '"><td>clockIdentity</td>' +
+                '<td>(this clock)</td><td title="' + bmca.peer.clock_id + '">' + shortId(bmca.peer.clock_id) + '</td></tr>';
+    gridRows += '<tr class="' + (decided==="steps_removed"?"decided":"") + '"><td>stepsRemoved</td>' +
+                '<td>\u2014</td><td>' + bmca.peer.steps_removed + '</td></tr>';
+
+    const stale = (roleUp === "MASTER" && annTimeoutS != null && ageMs != null && ageMs > annTimeoutS * 1000);
+    const peerHdrStyle = stale ? ' style="opacity:.5"' : '';
+    const peerHdrText = stale ? ("Peer (last heard " + (ageMs/1000).toFixed(0) + "s ago)") : "Peer";
+    html = '<table class="bmca-grid"><thead><tr><th>Field</th><th>This clock</th><th' + peerHdrStyle + '>' +
+           peerHdrText + '</th></tr></thead><tbody>' + gridRows + '</tbody></table>';
+
+    let annTile = '<div class="bmca-tile"><div class="t">Last Announce RX</div>';
+    if (ageMs != null) {
+      annTile += '<div class="v">' + (ageMs/1000).toFixed(1) + ' s ago</div>';
+      if (roleUp === "PASSIVE" && annTimeoutS) {
+        const pct = Math.max(0, Math.min(100, 100 * (ageMs/1000) / annTimeoutS));
+        const cls = pct >= 90 ? "--err" : (pct >= 50 ? "--warn" : "--ok");
+        annTile += '<div class="bar" style="width:100%"><i style="width:' + pct + '%;background:var(' + cls + ')"></i></div>';
+      }
+    } else {
+      annTile += '<div class="v">\u2014</div>';
+    }
+    annTile += '</div>';
+
+    const cand = bmca.candidate;
+    let candTile = '<div class="bmca-tile"><div class="t">Candidate</div>';
+    if (cand) {
+      let dots = "";
+      for (let i = 0; i < stabilityThresh; i++)
+        dots += (i < cand.count ? '<span class="on">\u25CF</span>' : '<span>\u25CB</span>');
+      candTile += '<div class="v" title="' + cand.clock_id + '">' + shortId(cand.clock_id) + '</div>' +
+                 '<div class="h bmca-dots">' + dots + '</div>';
+    } else {
+      candTile += '<div class="v">\u2014</div>';
+    }
+    candTile += '</div>';
+
+    let chgTile = '<div class="bmca-tile"><div class="t">Role changes</div><div class="v">' +
+                  (bmca.role_changes != null ? bmca.role_changes : 0) + '</div>';
+    if (bmca.events && bmca.events.length > 0 && uptimeMs != null) {
+      const agoS = Math.max(0, Math.round((uptimeMs - bmca.events[0].t_ms) / 1000));
+      chgTile += '<div class="h">last ' + formatUptime(agoS) + ' ago</div>';
+    }
+    chgTile += '</div>';
+
+    html += '<div class="bmca-strip">' + annTile + candTile + chgTile + '</div>';
+
+    if (bmca.events && bmca.events.length > 0) {
+      html += '<div class="bmca-events">' + bmca.events.map(e => {
+        const to = e.to === "MASTER" ? "PASSIVE\u2192MASTER" : "MASTER\u2192PASSIVE";
+        const toClass = e.to === "MASTER" ? "to-master" : "to-passive";
+        return '<div class="ev"><span>' + formatUptime(Math.round(e.t_ms/1000)) + '</span>' +
+               '<span class="' + toClass + '">' + to + '</span>' +
+               '<span>' + (e.reason || "\u2014") + '</span>' +
+               '<span>' + (e.peer ? shortId(e.peer) : "\u2014") + '</span>' +
+               '<span>' + (e.decided_by || "\u2014") + '</span></div>';
+      }).join("") + '</div>';
+    } else {
+      html += '<div class="bmca-empty">no role changes yet</div>';
+    }
+  }
+  $("bmcaBody").innerHTML = html;
+}
+
+let bmcaBusy = false;
+
+async function bmcaPoll() {
+  if (document.visibilityState !== "visible") return;
+  if (bmcaBusy) return;
+  bmcaBusy = true;
+  try {
+    const r = await fetch("/api/bmca", { cache: "no-store" });
+    if (r.ok) {
+      const resp = await r.json();
+      renderBmcaCard(resp.bmca, resp.uptime_ms, (resp.role || "").toUpperCase(), lastConfig);
+    }
+  } catch (err) {
+    console.warn("bmca poll failed:", err);
+  } finally {
+    bmcaBusy = false;
+  }
+}
+setInterval(bmcaPoll, 1000);
+
 /* ─── Main render ─── */
 function render(d) {
-  /* Header status pill */
-  const pill = $("hdrStatus");
+  applyConfigLabels(d.config);
+  lastConfig = d.config || lastConfig;
+
+  const roleUp = (d.role || "").toUpperCase();
   const stateUp = (d.servo_state || "").toUpperCase();
-  pill.className = "status-pill";
-  let pillText = "SERVO " + (stateUp || "?");
-  if (stateUp === "LOCKED") pill.className = "status-pill";
-  else if (stateUp === "HOLDOVER" || stateUp === "ACQUIRING") pill.className = "status-pill warn";
-  else pill.className = "status-pill err";
-  setText("hdrStatusText", pillText);
+
+  /* Header status pill: servo warn/err takes precedence; PASSIVE gets its
+     own info treatment; otherwise default (ok). */
+  const pill = $("hdrStatus");
+  let pillClass = "status-pill";
+  if (stateUp === "FAULT" || stateUp === "NO_LINK" || stateUp === "NO LINK") pillClass = "status-pill err";
+  else if (stateUp === "HOLDOVER" || stateUp === "ACQUIRING") pillClass = "status-pill warn";
+  else if (roleUp === "PASSIVE") pillClass = "status-pill info";
+  pill.className = pillClass;
+  setText("hdrStatusText", (roleUp || "?") + " \u00B7 SERVO " + (stateUp || "?"));
 
   /* Hero — Sync state */
   const mState = $("m_state");
@@ -568,7 +777,7 @@ function render(d) {
   else if (stateUp === "FAULT") mState.classList.add("fault");
   else if (stateUp === "NO_LINK" || stateUp === "NO LINK") mState.classList.add("no-link");
   setText("v_state", stateUp || "\u2014");
-  setText("v_state_sub", d.locked_for ? ("held " + d.locked_for) : "median window: 5");
+  setText("v_state_sub", (d.locked_for_s > 0) ? ("held " + formatUptime(d.locked_for_s)) : (stateUp || "\u2014"));
 
   /* Hero — Offset */
   if (typeof d.offset_ns === "number" && (stateUp === "LOCKED" || stateUp === "HOLDOVER")) {
@@ -585,6 +794,20 @@ function render(d) {
   } else {
     setText("v_freq", "\u2014");
   }
+  /* Freq sub-label tracks LIVE servo state (unlike the one-time config
+     labels above): ACQUIRING/UNLOCKED uses the fast acquire gains,
+     LOCKED/HOLDOVER the slow steady-state gains. No servo_gain_set JSON
+     field — servo_state already disambiguates for this purpose. */
+  if (d.config && d.config.servo) {
+    const sv = d.config.servo;
+    if (stateUp === "LOCKED" || stateUp === "HOLDOVER") {
+      let sub = "lock Kp=" + sv.lock_kp + " \u00B7 Ki=" + sv.lock_ki;
+      if (sv.lock_kd_enabled) sub += " \u00B7 Kd=" + sv.lock_kd;
+      setText("v_freq_sub", sub);
+    } else {
+      setText("v_freq_sub", "acquire Kp=" + sv.acq_kp + " \u00B7 Ki=" + sv.acq_ki);
+    }
+  }
 
   /* Hero — GNSS */
   setText("v_gnss", d.gnss_fix ? "FIX OK" : "NO FIX");
@@ -592,33 +815,37 @@ function render(d) {
   setText("v_gnss_sub", "PPS count: " + (d.pps_count != null ? d.pps_count.toLocaleString() : "\u2014"));
 
   /* Device */
-  setText("v_chip", (d.chip || "ESP32-P4") + " rev " + (d.chip_rev || "v1.0"));
-  setText("b_dev", (d.chip || "ESP32-P4") + " \u00B7 rev " + (d.chip_rev || "v1.0"));
-  setText("v_cpufreq", (d.cpu_mhz || 0) + " MHz");
+  setText("v_chip", (d.chip || "ESP32-P4") + " rev " + (d.chip_rev || "\u2014"));
+  setText("b_dev", (d.chip || "ESP32-P4") + " \u00B7 rev " + (d.chip_rev || "\u2014"));
+  setText("v_cpufreq", d.cpu_mhz != null ? (d.cpu_mhz + " MHz") : "\u2014");
   setText("v_proj", d.project || "\u2014");
   setText("v_appver", "app version " + (d.app_version || "\u2014"));
   setText("hdr_fw", "fw " + (d.app_version || "\u2014"));
   setText("v_idf", d.idf_version || "\u2014");
   setText("v_compile", d.compile_time || "\u2014");
   setText("v_sha", (d.elf_sha || "").substring(0,9) + "\u2026");
-  setText("v_flash", (d.flash_mb || 16) + " MB \u00B7 " + (d.flash_mode || "DIO") + " \u00B7 " + (d.flash_mhz || 80) + " MHz");
+  setText("v_flash", (d.flash_mb != null ? d.flash_mb + " MB" : "\u2014") + " \u00B7 " +
+                    (d.flash_mode || "\u2014") + " \u00B7 " + (d.flash_mhz != null ? d.flash_mhz + " MHz" : "\u2014"));
   setText("v_uptime", formatUptime(d.uptime_s || 0));
 
   /* Memory */
   setText("v_heap_free", fmtKB(d.heap_free || 0));
   setText("v_heap_min",  fmtKB(d.heap_min  || 0));
   setText("v_heap_lfb",  fmtKB(d.heap_lfb  || 0));
-  const retentTotal = d.retent_total != null ? d.retent_total : ((d.retent_kb || 0) * 1024);
-  const retentFree  = d.retent_free  != null ? d.retent_free  : retentTotal;
+  const retentTotal = d.retent_total != null ? d.retent_total : 0;
+  const retentFree  = d.retent_free  != null ? d.retent_free  : 0;
   setText("v_retent", fmtKB(retentFree) + " free / " + fmtKB(retentTotal));
-  setText("v_ram",       (d.ram1_kb || 384) + " + " + (d.ram2_kb || 18) + " KiB");
-  setText("v_rtcram",    (d.rtc_kb || 31) + " KiB");
-  setText("v_tcm",       (d.tcm_kb || 7) + " KiB");
+  setText("v_ram",    d.heap_internal_total != null ? fmtKB(d.heap_internal_total) : "\u2014");
+  setText("v_rtcram", d.rtc_heap_total != null ? fmtKB(d.rtc_heap_total) : "not in heap");
+  setText("v_tcm",    d.tcm_heap_total != null ? fmtKB(d.tcm_heap_total) : "not in heap");
+  const lv = $("v_leak");
   if (typeof d.heap_leak === "number") {
-    const lv = $("v_leak");
     const sign = d.heap_leak >= 0 ? "+" : "";
     setText("v_leak", sign + d.heap_leak + " B");
     lv.className = "value " + (Math.abs(d.heap_leak) > 1024 ? "warn" : "ok");
+  } else {
+    setText("v_leak", "measuring\u2026");
+    lv.className = "value dim";
   }
 
   /* Network */
@@ -627,7 +854,7 @@ function render(d) {
   setText("v_hostname", d.hostname || "\u2014");
   if (d.hostname) document.title = d.hostname + " \u2014 PTP Master";
   setText("v_ip", d.ip || "(no IP)");
-  setText("v_ip_hint", d.ip_source ? d.ip_source : "DHCP/static");
+  setText("v_ip_hint", d.ip_source || "\u2014");
   setText("v_mac", d.mac || "\u2014");
   $("v_l2tap").innerHTML = d.l2tap_ready ? '<span class="chip ok">READY</span>' : '<span class="chip err">NOT READY</span>';
   setText("v_mcast", "01:1B:19:00:00:00");
@@ -635,21 +862,63 @@ function render(d) {
   setText("v_emac", d.emac_restarts != null ? d.emac_restarts : "\u2014");
   emacV.className = "value " + ((d.emac_restarts || 0) === 0 ? "ok" : (d.emac_restarts > 5 ? "err" : "warn"));
   setText("v_promisc", d.promiscuous ? "enabled" : "disabled");
-  setText("v_wdt", d.wdt_healthy ? "healthy" : "alerting");
-  $("v_wdt").className = "value " + (d.wdt_healthy ? "ok" : "err");
+  const wdtV = $("v_wdt");
+  if (d.wdt) {
+    const wstateText = { ok:"ok", arming:"arming", phc_frozen:"PHC frozen", heap_critical:"heap critical", restart_limit:"restart limit" };
+    setText("v_wdt", wstateText[d.wdt.state] || d.wdt.state || "\u2014");
+    wdtV.className = "value " + ((d.wdt.state === "ok" || d.wdt.state === "arming") ? "ok" : "err");
+    let hint = (d.wdt.alerts != null ? d.wdt.alerts : 0) + " alerts";
+    if (d.wdt.last_alert_uptime_s != null && typeof d.uptime_s === "number")
+      hint += " \u00B7 last alert " + formatUptime(Math.max(0, d.uptime_s - d.wdt.last_alert_uptime_s)) + " ago";
+    setText("v_wdt_hint", hint);
+  } else {
+    setText("v_wdt", "\u2014");
+    wdtV.className = "value dim";
+  }
 
   /* PTP / timing */
-  setText("v_role", d.role || "\u2014");
   setText("v_clockid", d.clock_id || "\u2014");
-  setText("v_utc", d.utc_time || "--:--:--");
+  if (d.gnss_utc_s != null) {
+    setText("v_utc", new Date(d.gnss_utc_s * 1000).toISOString().substr(11,8));
+  } else {
+    setText("v_utc", "\u2014");
+  }
   setText("v_tai", "+" + (d.tai_offset != null ? d.tai_offset : "?") + " s");
-  setText("v_sync_int", (d.sync_interval_ms || 1000) + " ms");
-  setText("v_ann_int",  (d.announce_interval_ms || 2000) + " ms");
-  setText("v_seq", (d.sync_seq != null ? d.sync_seq.toLocaleString() : "?") + " \u00B7 " +
-                   (d.announce_seq != null ? d.announce_seq.toLocaleString() : "?"));
-  setText("v_path", d.path_delay_ns != null ? (d.path_delay_ns + " ns") : "\u2014 (master)");
-  setText("v_slaves", (d.slaves_active != null ? d.slaves_active : "?") + " / " +
-                      (d.slaves_max || 8));
+  if (d.config && d.config.ptp) {
+    setText("v_sync_int", d.config.ptp.sync_interval_ms + " ms");
+    setText("v_ann_int",  d.config.ptp.announce_interval_ms + " ms");
+  }
+  if (roleUp === "PASSIVE") {
+    setText("v_seq", "paused (passive)");
+  } else {
+    setText("v_seq", (d.sync_seq != null ? d.sync_seq.toLocaleString() : "?") + " \u00B7 " +
+                     (d.announce_seq != null ? d.announce_seq.toLocaleString() : "?"));
+  }
+  const slavesMax = (d.config && d.config.net) ? d.config.net.slaves_max : null;
+  if (roleUp === "PASSIVE") {
+    setText("v_slaves", "\u2014 (passive)");
+  } else {
+    setText("v_slaves", (d.slaves_active != null ? d.slaves_active : "?") + " / " +
+                        (slavesMax != null ? slavesMax : "\u2014"));
+  }
+
+  /* Role — best-peer id + BMCA event history, when available */
+  const bmca = d.bmca;
+  if (roleUp === "PASSIVE" && bmca && bmca.peer_better && bmca.peer && bmca.peer.clock_id) {
+    setText("v_role", "PASSIVE \u2192 " + shortId(bmca.peer.clock_id));
+  } else {
+    setText("v_role", roleUp || "\u2014");
+  }
+  if (bmca && bmca.role_changes != null) {
+    let hint = bmca.role_changes + " changes";
+    if (bmca.events && bmca.events.length > 0 && typeof d.uptime_s === "number") {
+      const sinceS = Math.max(0, d.uptime_s - Math.floor(bmca.events[0].t_ms / 1000));
+      hint = "since " + formatUptime(sinceS) + " \u00B7 " + hint;
+    }
+    setText("v_role_hint", hint);
+  } else {
+    setText("v_role_hint", "BMCA result");
+  }
 
   /* Servo */
   setText("v_servo", stateUp);
@@ -658,9 +927,25 @@ function render(d) {
                               stateUp === "HOLDOVER" ? "warn" :
                               stateUp === "FAULT" || stateUp === "NO_LINK" ? "err" : "");
   setText("v_integ", d.integrator != null ? d.integrator.toFixed(2) : "\u2014");
+  const lockQualWindow = (d.config && d.config.servo) ? d.config.servo.lock_qual_window : null;
   setText("v_lockq", (d.lock_qual != null ? d.lock_qual : "?") + " / " +
-                     (d.lock_qual_window || 64));
+                     (lockQualWindow != null ? lockQualWindow : "\u2014"));
   setText("v_pps", d.pps_count != null ? d.pps_count.toLocaleString() : "\u2014");
+  /* PPS glitches absorbed: edges that no-fix coasting did not count as a plain
+   * +1 s (extra pulses / missing pulses). Each one is a whole-second reference
+   * error the coasting fix prevented. Green at 0, info-blue once any occurred;
+   * dim dash on firmware that does not report the fields. */
+  const pgv = $("v_ppsglitch");
+  if (pgv) {
+    const gx = d.pps_coast_extra, gm = d.pps_coast_missing;
+    if (gx == null || gm == null) {
+      setText("v_ppsglitch", "\u2014");
+      pgv.className = "value dim";
+    } else {
+      setText("v_ppsglitch", gx.toLocaleString() + " extra \u00B7 " + gm.toLocaleString() + " missing");
+      pgv.className = "value " + ((gx + gm) === 0 ? "ok" : "info");
+    }
+  }
   /* Sample rejects: lifetime total, with a live "REJ n/45" warning while a
    * reject streak is climbing (mirrors the OLED screen-2 indicator). Green at
    * 0, info-blue once any have occurred (self-healed), warn/err as a streak
@@ -669,7 +954,7 @@ function render(d) {
   if (rv) {
     const total = (d.reject_total != null) ? d.reject_total : null;
     const streak = (d.reject_streak != null) ? d.reject_streak : 0;
-    const reacq = d.reject_reacquire_at || 45;
+    const reacq = (d.config && d.config.servo && d.config.servo.reject_reacquire_at) || 45;
     if (total == null) {
       setText("v_reject", "\u2014");
       rv.className = "value dim";
@@ -682,12 +967,17 @@ function render(d) {
     }
   }
   setText("v_phc", d.phc_residual_ns != null ? ((d.phc_residual_ns >= 0 ? "+" : "") + d.phc_residual_ns + " ns") : "\u2014");
-  setText("v_holdto", (d.holdover_timeout_s || 5) + " s");
+  const holdTo = (d.config && d.config.servo) ? d.config.servo.holdover_timeout_s : null;
+  setText("v_holdto", (holdTo != null ? holdTo : "\u2014") + " s");
   const stl = $("v_settled");
   setText("v_settled", d.settled ? "yes" : "no");
   stl.className = "value " + (d.settled ? "ok" : "warn");
   setText("v_gnssage", d.gnss_age_s != null ? (d.gnss_age_s + " s ago") : "\u2014");
-  setText("v_ppsled", d.pps_led_active ? "blinking" : "idle");
+  setText("v_ppsled", stateUp === "LOCKED" ? "blinking" : "idle");
+
+  /* BMCA card — seeded from /api/status; bmcaPoll() (1 Hz) refreshes it
+     afterwards from /api/bmca using the same rendering function. */
+  renderBmcaCard(bmca, (typeof d.uptime_s === "number" ? d.uptime_s * 1000 : null), roleUp, d.config);
 
   /* Tasks */
   if (Array.isArray(d.tasks)) {

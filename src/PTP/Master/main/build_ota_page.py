@@ -143,77 +143,114 @@ STATUS_CLOSING = r"""
  *
  * The page expects this JSON shape. Any field may be omitted; the UI shows
  * an em-dash for missing values. All numbers are plain JSON numbers (not
- * strings).
+ * strings). No key appears both at top level and inside "config"/"bmca" --
+ * that would be duplicated information (see the BMCA/JSON-dashboard
+ * handover, section 1: "no duplicated information inside any one endpoint").
  *
  * {
  *   "chip":              "ESP32-P4",
  *   "chip_rev":          "v1.0",
- *   "cpu_mhz":           360,
+ *   "cpu_mhz":           360,           // esp_rom_get_cpu_ticks_per_us(), boot-cached
  *   "project":           "PTP_Master",
  *   "app_version":       "819246f-dirty",
  *   "idf_version":       "v5.5.4",
  *   "compile_time":      "May 12 2026 16:24",
  *   "elf_sha":           "d25969555aabbccdd...",
- *   "flash_mb":          16,
- *   "flash_mode":        "DIO",
- *   "flash_mhz":         80,
+ *   "flash_mb":          16,            // esp_flash_get_size(), boot-cached
+ *   "flash_mode":        "dio",         // CONFIG_ESPTOOLPY_FLASHMODE
+ *   "flash_mhz":         80,            // CONFIG_ESPTOOLPY_FLASHFREQ_VAL
  *   "uptime_s":          10053,
  *
  *   "heap_free":         428032,   // bytes -- heap_caps_get_free_size(MALLOC_CAP_INTERNAL)
  *   "heap_min":          398336,   // bytes -- heap_caps_get_minimum_free_size(MALLOC_CAP_INTERNAL)
  *   "heap_lfb":          262144,   // bytes -- heap_caps_get_largest_free_block(MALLOC_CAP_INTERNAL)
- *   "heap_leak":         0,        // bytes delta vs. boot baseline
- *   "retent_total":     172032,   // bytes with MALLOC_CAP_RETENTION
- *   "retent_free":      145120,   // currently free bytes in that capability heap
- *   "ram1_kb":           384,
- *   "ram2_kb":           18,
- *   "rtc_kb":            31,
- *   "tcm_kb":            7,
+ *   "heap_leak":         0,        // bytes delta vs. boot+10s baseline, or null before that baseline exists
+ *   "heap_internal_total":507904,  // heap_caps_get_total_size(MALLOC_CAP_INTERNAL), boot-cached
+ *   "retent_total":      172032,   // bytes with MALLOC_CAP_RETENTION
+ *   "retent_free":       145120,   // currently free bytes in that capability heap
+ *   "rtc_heap_total":    null,     // MALLOC_CAP_RTCRAM heap total, or null if not heap-managed here
+ *   "tcm_heap_total":    null,     // MALLOC_CAP_TCM heap total, or null if not heap-managed here
  *
  *   "link_up":           true,
  *   "l2tap_ready":       true,
  *   "ip":                "192.168.5.142",
- *   "ip_source":         "DHCP lease",
+ *   "ip_source":         "DHCP",        // "DHCP" | "Static" | null (no IP yet)
  *   "mac":               "30:ED:A0:E2:33:D3",
  *   "hostname":          "radiant-captain-james-smith",
- *   "emac_restarts":     0,        // g_emac_restart_count
+ *   "emac_restarts":     0,        // g_emac_restart_count -- the watchdog's OWN recovery count, not duplicated in "wdt"
  *   "promiscuous":       false,
- *   "wdt_healthy":       true,
+ *   "wdt": {
+ *     "state":              "ok",  // "arming" | "ok" | "phc_frozen" | "heap_critical" | "restart_limit"
+ *     "alerts":             0,     // count of 30s passes that found a problem
+ *     "last_alert_uptime_s":null  // uptime seconds of the last alert, or null if never
+ *   },
  *
- *   "role":              "MASTER",      // or "SLAVE"
+ *   "role":              "MASTER",      // or "PASSIVE" (never "SLAVE" -- this is a GM-only firmware)
  *   "clock_id":          "30ED A0FF FEE2 33D3",
- *   "utc_time":          "14:38:21",
+ *   "gnss_utc_s":        1778901234,    // epoch seconds from GNSS, or null when GNSS time isn't valid
  *   "tai_offset":        37,            // g_utc_offset
- *   "sync_interval_ms":  1000,
- *   "announce_interval_ms": 2000,
  *   "sync_seq":          10031,         // g_sync_seq
  *   "announce_seq":      5015,          // g_announce_seq
- *   "path_delay_ns":     null,          // master => null; slave => g_slave_path_delay_ns
  *   "slaves_active":     3,             // slave_active_count()
- *   "slaves_max":        8,             // SLAVE_TRACK_MAX
  *
  *   "servo_state":       "LOCKED",      // NO_LINK | ACQUIRING | LOCKED | HOLDOVER | FAULT
- *   "locked_for":        "00:42:17",
- *   "offset_ns":         128,           // g_last_offset
+ *   "locked_for_s":      2537,          // 0 when not LOCKED
+ *   "offset_ns":         128,           // g_last_offset (averaged once LOCKED)
  *   "freq_ppb":          -12.4,         // g_freq_ppb
  *   "integrator":        -3.21,         // g_integral
- *   "lock_qual":         61,            // g_lock_qual_count
- *   "lock_qual_window":  64,            // LOCK_QUAL_WINDOW
+ *   "lock_qual":         61,            // good samples (within lock_qual_good_ns) among the last
+ *                                       // config.servo.lock_qual_window -- same as the OLED
  *   "pps_count":         2548,          // g_pps_capture_seq
+ *   "pps_coast_extra":   0,             // g_pps_coast_extra -- extra (glitch) PPS edges seen
+ *                                       // (lifetime, since boot)
+ *   "pps_coast_missing": 0,             // g_pps_coast_missing -- missing PPS edges, in whole seconds
+ *                                       // (lifetime, since boot)
  *   "reject_total":      0,             // g_total_rejects (lifetime, since boot)
  *   "reject_streak":     0,             // g_consecutive_rejects (live run)
- *   "reject_reacquire_at":45,           // REJECT_STREAK_REACQUIRE
- *   "phc_residual_ns":   42,            // g_phc_offset_ns
- *   "holdover_timeout_s":5,             // HOLDOVER_TIMEOUT_SEC
+ *   "phc_residual_ns":   42,            // g_phc_offset_ns -- RAW per-edge offset (pre-average); differs
+ *                                       // from offset_ns while LOCKED, where offset_ns is the filtered mean
+ *   "sec_agree":         true,          // g_seconds_agree -- receiver and PHC agree on the second
+ *   "sec_diff":          0,             // g_seconds_diff -- receiver second minus PHC second (0 = agree)
+ *   "sec_disagree_n":    0,             // g_seconds_disagree_n -- consecutive checks with that difference
  *   "settled":           true,          // g_settled_after_holdover
  *   "gnss_age_s":         2,
  *   "gnss_fix":           true,
- *   "pps_led_active":    true,
+ *
+ *   "bmca": {
+ *     "local":   {"priority1":128,"clock_class":6,"accuracy":33,"variance":65535,"priority2":128},
+ *     "peer":    {"clock_id":"30ED A0FF FEA1 075C","priority1":128,"clock_class":6,
+ *                 "accuracy":33,"variance":65535,"priority2":128,"steps_removed":0},
+ *     "peer_better": true,
+ *     "decided_by": "clock_identity",   // steps_removed|priority1|clock_class|accuracy|variance|priority2|clock_identity|null
+ *     "candidate": {"clock_id":"30ED A0FF FEA1 075C","count":3},
+ *     "last_announce_rx_age_ms": 1400,
+ *     "role_changes": 2,
+ *     "events": [
+ *       {"t_ms":2467000,"to":"PASSIVE","reason":"better_announce",
+ *        "peer":"30ED A0FF FEA1 075C","decided_by":"clock_identity"}
+ *     ]
+ *   },
+ *
+ *   "config": {
+ *     "ptp":   {"domain":0,"transport":"L2","delay_mechanism":"E2E","two_step":true,
+ *               "sync_interval_ms":1000,"announce_interval_ms":2000,
+ *               "announce_timeout_s":6,"bmca_stability_threshold":3},
+ *     "servo": {"acq_kp":0.4,"acq_ki":0.3,
+ *               "lock_kp":0.05,"lock_ki":0.001,"lock_kd":2.0,"lock_kd_enabled":false,
+ *               "avg_window":32,"lock_qual_window":64,"lock_qual_good_ns":2000,
+ *               "reject_reacquire_at":45,"holdover_timeout_s":5,"post_holdover_settle_ms":30000},
+ *     "hw":    {"pps_gpio":20,"pps_led_gpio":3,"pps_led_on_ms":50,"button_gpio":1,
+ *               "gnss_uart":1,"gnss_baud":115200,"display_screens":5},
+ *     "net":   {"dhcp_fallback_timeout_ms":30000,"slaves_max":8,"slave_timeout_ms":30000},
+ *     "mon":   {"heap_mon_interval_ms":60000}
+ *   },
  *
  *   "tasks": [
  *     { "name": "ptp_rx",   "priority": 7, "stack_bytes": 8192, "hwm_bytes": 4734, "core": 0 },
  *     { "name": "ptp_tx",   "priority": 5, "stack_bytes": 8192, "hwm_bytes": 5298, "core": 0 },
+ *     { "name": "bmca_log", "priority": 1, "stack_bytes": 2048, "hwm_bytes": 1500, "core": 0 },
  *     { "name": "gnss",      "priority": 5, "stack_bytes": 6144, "hwm_bytes": 2752, "core": 1 },
+ *     { "name": "gnss_sig", "priority": 1, "stack_bytes": 3072, "hwm_bytes": 2400, "core": 0 },
  *     { "name": "servo",    "priority": 6, "stack_bytes": 6144, "hwm_bytes": 3211, "core": 1 },
  *     { "name": "pps_task", "priority": 7, "stack_bytes": 4096, "hwm_bytes": 2868, "core": 1 },
  *     { "name": "pps_led",  "priority": 1, "stack_bytes": 2048, "hwm_bytes": 1600, "core": 0 },
@@ -223,13 +260,33 @@ STATUS_CLOSING = r"""
  *     { "name": "dhcp_fb",  "priority": 2, "stack_bytes": 3072, "hwm_bytes": 2304, "core": 0 },
  *     { "name": "heap_mon", "priority": 1, "stack_bytes": 3072, "hwm_bytes": 2334, "core": 0 },
  *     { "name": "wdt",      "priority": 1, "stack_bytes": 4096, "hwm_bytes": 2950, "core": 0 },
- *     { "name": "main",     "priority": 1, "stack_bytes": 4096, "hwm_bytes": 2900, "core": 0 }
+ *     { "name": "httpd",    "priority": 5, "stack_bytes": 8192, "hwm_bytes": 3800, "core": 0 },
+ *     { "name": "main",     "priority": 1, "stack_bytes": 3584, "hwm_bytes": 2900, "core": 0 }
  *   ]
  * }
+ *
+ * Removed since the previous contract (do not reintroduce): ram1_kb, ram2_kb,
+ * rtc_kb, tcm_kb (invented literals -- replaced by heap_internal_total/
+ * rtc_heap_total/tcm_heap_total), utc_time (replaced by gnss_utc_s), locked_for
+ * (replaced by locked_for_s), path_delay_ns (this is a GM-only firmware --
+ * always null, so removed rather than reported), wdt_healthy (replaced by the
+ * "wdt" object), pps_led_active (was a duplicate of servo_state=="LOCKED"),
+ * sync_interval_ms/announce_interval_ms/lock_qual_window/reject_reacquire_at/
+ * holdover_timeout_s/slaves_max (moved into "config", which is where every
+ * compile-time constant lives now).
+ *
+ * GET /api/bmca returns { "uptime_ms":N, "role":"MASTER|PASSIVE",
+ * "clock_id":"...", "bmca":{...same shape as above...} } -- for the
+ * dashboard's 1 Hz BMCA-card poll, without the task-table walk /api/status
+ * does. POST /api/bmca/priority?p1=N&p2=M (Basic Auth, same credentials as
+ * OTA) sets the runtime priority1/priority2 used by the next Announce sent
+ * and the next one evaluated; RAM-only, reset to 128/128 on reboot.
  *
  * Use uxTaskGetSystemState() to populate the "tasks" array. hwm_bytes is
  * the FreeRTOS high-water-mark (uxTaskGetStackHighWaterMark) multiplied by
  * sizeof(StackType_t) -- i.e. the smallest amount of free stack ever seen.
+ * stack_bytes comes from the task_create_tracked() registry and is null for
+ * any task not registered there.
  * --------------------------------------------------------------------------- */
 
 #endif /* STATUS_PAGE_H */

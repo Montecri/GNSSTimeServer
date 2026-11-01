@@ -75,6 +75,7 @@
 #include <stdatomic.h>
 #include "esp_timer.h"
 #include "esp_heap_caps.h"
+#include "esp_flash.h"
 #include <inttypes.h>
 #include "esp_netif.h"
 #include "esp_netif_types.h"
@@ -196,8 +197,12 @@ _Static_assert(PTP_ANNOUNCE_DIV >= 1,
 #define SLAVE_TRACK_MAX 8      /* max simultaneously-tracked slaves */
 #define SLAVE_TIMEOUT_MS 30000 /* a slave is "active" if seen <30s ago */
 
+/* ─── Heap monitor ─── */
+#define HEAP_MON_INTERVAL_MS 60000 /* heap_monitor_task's steady-state loop period */
+
 /* ─── GNSS UART + PPS pins ─── */
 #define GNSS_UART_NUM UART_NUM_1
+#define GNSS_UART_BAUD 115200
 #define GNSS_TX_PIN 33
 #define GNSS_RX_PIN 32
 #define PPS_GPIO 20
@@ -280,19 +285,46 @@ _Static_assert(PTP_ANNOUNCE_DIV >= 1,
  * (≈9 seconds): with both phase + freq gated, this is solid evidence of
  * convergence without being painfully slow. */
 #define LOCK_THRESHOLD 8
+/* Holdover: hold the learned crystal correction (integral term) instead of
+ * steering the PHC to the receiver's free-running PPS. On the bench the
+ * TAU1201's PPS drifted ~1.15 us/s without a fix, the free-running PHC
+ * 0.2-0.5 us/s. 0 restores the previous behaviour (P term active). */
+#define HOLDOVER_FREEZE_FREQ 1
+/* Holdover exit realign (SERVO_LOCKED): collect REALIGN_SAMPLES mutually
+ * consistent raw offsets (spread < REALIGN_SPREAD_NS, each < REALIGN_MAX_NS so
+ * a GNSS time that is still settling is waited out), then step the PHC by their
+ * median if it exceeds REALIGN_MIN_NS. The learned frequency is kept. Gives up
+ * after REALIGN_TIMEOUT_MS with a full re-acquire. */
+#define REALIGN_SAMPLES 8
+#define REALIGN_MIN_NS 10000LL
+#define REALIGN_MAX_NS 100000000LL
+#define REALIGN_SPREAD_NS 50000LL
+#define REALIGN_TIMEOUT_MS 120000
+/* How the error is removed. Up to REALIGN_STEP_NS it is SLEWED: the frequency is
+ * offset by at most REALIGN_SLEW_MAX_PPB for whole servo cycles (1 ppb for 1 s =
+ * 1 ns), then returned to the learned value -- accurate to ~100 ns. A read-then-set
+ * step lands ~25-45 us behind on this hardware (write latency), so steps are only
+ * used for errors where that no longer matters. */
+#define REALIGN_STEP_NS 1000000LL
+#define ACQ_A_JUMP_NS 1000000LL /* ACQUIRE-A steps only if no sample-to-sample change exceeds this */
+#define REALIGN_SLEW_MAX_PPB 100000LL
+/* Windowed lock test (ACQUIRING): LOCKED is also declared when the last
+ * LOCK_WIN_N offsets have |mean| < LOCK_OFFSET_NS and a least-squares slope
+ * (= residual frequency error, ns/s = ppb) below LOCK_WIN_SLOPE_PPB. Averaging
+ * over the window removes PPS capture jitter that makes the 9-consecutive-
+ * sample rule above fail on noisy antennas. Never used during holdover.
+ * Every sample in the window must also be within +/-LOCK_WIN_MAX_NS, so a
+ * loop that is still ringing (large swings averaging to ~0) cannot pass. */
+#define LOCK_WIN_N 32
+#define LOCK_WIN_SLOPE_PPB 250.0
+#define LOCK_WIN_MAX_NS (4 * LOCK_OFFSET_NS)
+/* The window rule is a fallback: it may only declare LOCKED after this many
+ * samples in ACQUIRING, so whenever the 9-sample rule can lock (clean PPS)
+ * behaviour is exactly as before. */
+#define LOCK_WIN_GRACE 120
 #define LOCK_OFFSET_NS 5000LL
 #define LOCK_FREQ_DELTA_NS 2000LL
 
-/* ACQUIRING sanity rail. A pre-lock offset beyond this bound cannot come
- * from normal acquisition (worst legitimate case is ~2.5 s: coarse-step
- * granularity plus a stale sentence_offset); it means the PHC or the GNSS
- * reference moved out from under the acquisition — a PPS edge captured
- * during an EMAC restart window, a receiver power-cycle, or a garbage
- * coarse step. ACQUIRING has no other exit path, so servo_task restarts
- * acquisition from UNLOCKED after ACQ_RAIL_STRIKES consecutive
- * beyond-rail samples (a lone outlier is skipped, not punished). */
-#define MAX_STEP_NS 10000000000LL /* 10 s */
-#define ACQ_RAIL_STRIKES 3
 
 /* Consecutive HARD_REJECTs in SERVO_LOCKED that force a full re-acquire.
  * Defined here (not inside servo_task) so render_screen_servo, which is
@@ -351,7 +383,9 @@ _Static_assert(PTP_ANNOUNCE_DIV >= 1,
 /* ─── LED status indicator ─── */
 #define LED_GPIO 2        // <-- set to your LED pin
 #define LED_ACTIVE_HIGH 1 // 0 if LED is wired active-low
-#define LED_TASK_STACK 2048
+/* 3072 since 2026-10: 2048 left only ~250 B free on the bench (one log call could overflow) */
+#define LED_TASK_STACK 3072
+#define PPS_LED_TASK_STACK 3072 /* was 2048 inline: ~250 B free */
 #define LED_TASK_PRIO 1 // low priority — never blocks anything
 #define LED_TICK_MS 10  // pattern resolution
 
@@ -370,7 +404,7 @@ _Static_assert(PTP_ANNOUNCE_DIV >= 1,
 #define DISPLAY_TASK_PRIO 1    // lowest meaningful priority
 #define DISPLAY_REFRESH_MS 500 // 2 Hz refresh
 
-#define BUTTON_TASK_STACK 2048
+#define BUTTON_TASK_STACK 3072 /* was 2048: ~250 B free */
 #define BUTTON_TASK_PRIO 1
 #define BUTTON_POLL_MS 20       // debounce poll interval
 #define BUTTON_DEBOUNCE_TICKS 3 // 3 × 20ms = 60ms stable required
@@ -455,6 +489,100 @@ typedef struct
     uint8_t clock_id[8];
     uint16_t steps_removed; /* host order; 0 for the local (GM) dataset */
 } bmca_dataset_t;
+
+/* Which comparison step decided a BMCA outcome. Order mirrors bmca_compare(). */
+typedef enum
+{
+    BMCA_FIELD_NONE = 0,
+    BMCA_FIELD_STEPS_REMOVED, /* same GM identity: decided on stepsRemoved (Fig. 28) */
+    BMCA_FIELD_PRIORITY1,
+    BMCA_FIELD_CLOCK_CLASS,
+    BMCA_FIELD_ACCURACY,
+    BMCA_FIELD_VARIANCE,
+    BMCA_FIELD_PRIORITY2,
+    BMCA_FIELD_CLOCK_IDENTITY,
+} bmca_field_t;
+
+typedef enum
+{
+    BMCA_REASON_BETTER_ANNOUNCE = 1, /* MASTER -> PASSIVE: remote dataset beat ours      */
+    BMCA_REASON_WORSE_ANNOUNCE,      /* PASSIVE -> MASTER: remote dataset no longer better */
+    BMCA_REASON_ANNOUNCE_TIMEOUT,    /* PASSIVE -> MASTER: no Announce for > timeout      */
+} bmca_reason_t;
+
+#define BMCA_EVENT_RING 8
+
+typedef struct
+{
+    int64_t t_ms;       /* uptime ms (esp_timer based, same base as g_boot_time_ms) */
+    uint8_t to_master;  /* 1 = became MASTER, 0 = became PASSIVE */
+    uint8_t reason;     /* bmca_reason_t */
+    uint8_t decided_by; /* bmca_field_t (NONE for timeout) */
+    uint8_t peer_valid; /* 0 for timeout */
+    uint8_t peer_id[8];
+} bmca_event_t;
+
+/* Everything the web layer reports about BMCA. Written ONLY by ptp_rx_task,
+ * read by httpd through the seqlock below. */
+typedef struct
+{
+    bmca_dataset_t local; /* our dataset as used in the last evaluation */
+    bool           local_valid;
+    bmca_dataset_t peer; /* last remote dataset that passed the stability filter */
+    bool           peer_valid;
+    bool           peer_better; /* true => we are PASSIVE because of this peer */
+    uint8_t        decided_by;  /* bmca_field_t of the last evaluation */
+    uint8_t        cand_id[8];  /* stability-filter candidate (may differ from peer) */
+    uint8_t        cand_count;  /* saturates at 255 */
+    bool           cand_valid;
+    int64_t        last_ann_rx_ms; /* uptime ms of last accepted Announce, 0 = never */
+    uint32_t       role_changes;   /* lifetime count, not limited by the ring */
+    bmca_event_t   ev[BMCA_EVENT_RING];
+    uint8_t        ev_next;  /* index of next slot to write */
+    uint8_t        ev_count; /* 0..BMCA_EVENT_RING */
+} bmca_view_t;
+
+/* Seqlock protecting g_bmca_view — single writer (ptp_rx_task), read by httpd.
+ * "Uptime ms" everywhere in bmca_view_t means
+ * esp_timer_get_time() / 1000 - g_boot_time_ms, the same base /api/status
+ * uses for uptime_s. */
+static bmca_view_t g_bmca_view;
+static _Atomic uint32_t g_bmca_seq = 0;
+
+/* Writer side — call ONLY from ptp_rx_task. Never nest begin/end. */
+static inline void bmca_view_write_begin(void)
+{
+    uint32_t s = atomic_load_explicit(&g_bmca_seq, memory_order_relaxed);
+    atomic_store_explicit(&g_bmca_seq, s + 1u, memory_order_relaxed); /* odd */
+    atomic_thread_fence(memory_order_release);
+}
+static inline void bmca_view_write_end(void)
+{
+    uint32_t s = atomic_load_explicit(&g_bmca_seq, memory_order_relaxed);
+    atomic_store_explicit(&g_bmca_seq, s + 1u, memory_order_release); /* even */
+}
+
+/* Reader side — httpd. Returns false if a consistent copy could not be taken.
+ * No delay in the retry loop: the writer (ptp_rx_task, prio 7) cannot be
+ * preempted by httpd (prio 5) on the same core, and its write sections are a
+ * few hundred bytes of stores with no blocking calls, so an odd sequence
+ * resolves within microseconds. If this still returns false, the caller must
+ * respond 503 (never emit a torn object). */
+static bool bmca_view_snapshot(bmca_view_t *out)
+{
+    for (int tries = 0; tries < 16; tries++)
+    {
+        uint32_t s1 = atomic_load_explicit(&g_bmca_seq, memory_order_acquire);
+        if (s1 & 1u)
+            continue; /* writer mid-update: retry */
+        memcpy(out, (const void *)&g_bmca_view, sizeof(*out));
+        atomic_thread_fence(memory_order_acquire);
+        uint32_t s2 = atomic_load_explicit(&g_bmca_seq, memory_order_relaxed);
+        if (s1 == s2)
+            return true;
+    }
+    return false;
+}
 
 /* ─── Servo state machine ─── */
 typedef enum
@@ -680,6 +808,28 @@ static double g_freq_ppb = 0;
 static _Atomic int32_t g_freq_ppb_hw = 0;
 static volatile int64_t g_last_offset = 0;
 static volatile uint32_t g_pps_edge_count = 0;
+/* PPS edges that no-fix coasting in pps_task did NOT label as a plain "+1 s"
+ * (lifetime, never reset). Written only by pps_task inside g_servo_spinlock;
+ * read by httpd as single aligned 32-bit loads. Diagnostic only: nothing
+ * reads them back into the timing core.
+ *   g_pps_coast_extra   - edges labelled with the same (or an earlier) second
+ *                         than the previous edge: extra / glitch pulses.
+ *   g_pps_coast_missing - whole seconds skipped between two labelled edges:
+ *                         missing pulses.
+ * Glitches while the fix is valid are handled by the GNSS path and are not
+ * counted here. */
+static volatile uint32_t g_pps_coast_extra = 0;
+static volatile uint32_t g_pps_coast_missing = 0;
+/* True when the most recently processed PPS edge is TRUSTED for deciding
+ * which second is which: it arrived ~1 s (+/- PPS_REGULAR_TOL_US, monotonic
+ * esp_timer, immune to PHC steps) after the previous edge, AND the GNSS time
+ * seen at it is valid and exactly 1 s later than at the previous edge. Written
+ * by pps_task inside g_servo_spinlock; servo_task snapshots it together with
+ * g_last_pps_phc_ns. The coarse step and the sentence-offset derivation only
+ * use trusted edges, so neither a glitch pulse nor a single bad-time sentence
+ * can fix the PHC on the wrong second for the rest of the uptime. */
+#define PPS_REGULAR_TOL_US 10000
+static volatile bool g_last_pps_trusted = false;
 
 /* Lifetime count of rejected PPS samples since boot. Persistent diagnostic
  * shown on OLED screen 2: lets you tell at a glance whether the board has
@@ -687,22 +837,39 @@ static volatile uint32_t g_pps_edge_count = 0;
  * the streak self-healed back to zero. Never reset on re-acquire — boot only. */
 static volatile uint32_t g_total_rejects = 0;
 
-static volatile uint64_t g_gnss_pps_ns = 0;
-static volatile bool g_gnss_pps_valid = false;
+/* The PHC is the clock: it alone says which second it is. GNSS corrects its
+ * phase (sub-second, every edge) and checks its second (seconds checker in
+ * pps_task); it never relabels edges. g_phc_stepped = the PHC holds real time
+ * (set by the COARSE STEP). */
 static volatile bool g_phc_stepped = false;
 static volatile bool g_phc_residual_measured = false;
 
-/* Which second the time-bearing NMEA sentence describes, relative to the PPS
- * edge it arrives around (0 = the sentence precedes its edge, 1/2 = it
- * trails; -1 = not yet determined). Determined once after each COARSE STEP
- * and consumed on every edge to build the GNSS time target (see pps_task).
- * Written by pps_task under g_servo_spinlock; servo_task resets it to -1
- * (under the same lock) in the true-PPS-outage re-acquire path: a receiver
- * power-cycle or swap can change sentence timing, and a stale value there
- * would make the whole acquisition converge exactly one second off TAI.
- * Was previously function-static in pps_task — unreachable from the
- * re-acquire path, which is how it survived receiver power-cycles. */
-static volatile int g_sentence_offset = -1;
+/* Seconds between the time carried by the latest RMC and the PPS edge being
+ * labelled. This is a property of the receiver, not something to derive at run
+ * time: the TAU1201 emits RMC ~0.2 s AFTER the PPS edge it describes (standard
+ * NMEA; measured against an NTP-synchronised host on 2026-09-30), so an edge is
+ * (latest RMC second) + 1. The former derivation from floor(PHC) right after
+ * the coarse step returned 0 on this receiver, which put the PHC exactly 1 s
+ * behind TAI. Use 0 only for a receiver that sends the time of the NEXT edge
+ * before that edge. */
+#define GNSS_SENTENCE_OFFSET 1
+
+/* Seconds checker (pps_task). On every fresh fix + trusted edge the receiver's
+ * second is compared with the PHC's. Any disagreement makes the clock advertise
+ * class 7 at once (it may be either side that is wrong). The PHC is stepped by
+ * whole seconds only after the SAME difference persisted this many checks:
+ * short before the first lock (the PHC has no history to trust yet), long after
+ * it (a receiver can report a wrong UTC second for minutes after an outage --
+ * 1 s seen on the bench -- while the free-running PHC keeps the right one). */
+#define SECONDS_CONFIRM_BOOT_S 10
+#define SECONDS_CONFIRM_LOCKED_S 900
+static volatile bool g_seconds_agree = true;       /* last check agreed */
+static volatile int32_t g_seconds_diff = 0;        /* receiver second - PHC second (0 = agree) */
+static volatile uint32_t g_seconds_disagree_n = 0; /* consecutive checks with this difference */
+static volatile int32_t g_seconds_fix_req = 0;     /* whole seconds servo_task is to step the PHC by */
+static volatile uint32_t g_phc_step_gen = 0;       /* bumped on every PHC set: second history restarts */
+static volatile bool g_last_pps_plausible = true;  /* edge's PHC second continues the previous ones */
+static volatile bool g_last_pps_regular = false;   /* edge came ~1 s after the previous one */
 static volatile int64_t g_phc_offset_ns = 0; /* measured steady-state offset */
 
 /* Live reject-streak counter for OLED screen 2. Mirrors servo_task's
@@ -741,9 +908,29 @@ static uint8_t g_qual_raw_samples = 0; /* counter so we reset bounds periodicall
 
 /* ─── Holdover / post-holdover settling ─── */
 static time_t g_last_gnss_update = 0;
+/* esp_timer ms of the last RMC that carried a valid fix (written with
+ * g_gnss_seconds under g_gnss_spinlock). pps_task treats the GNSS time as
+ * invalid once it is older than GNSS_FRESH_MS: g_gnss_valid alone never
+ * expires, so a silent NMEA stream (UART fault, receiver hang) with PPS still
+ * running used to feed a frozen second into the reference. One RMC per
+ * second puts the age at a PPS edge near 0.8 s; 1.5 s also coasts through a
+ * single dropped sentence instead of labelling that edge a second late. */
+#define GNSS_FRESH_MS 1500
+static volatile int64_t g_last_rmc_ms = 0;
 static bool g_holdover = true;
 static volatile int64_t g_lock_acquired_ms = 0; /* esp_timer ms when SERVO_LOCKED entered */
 static volatile bool g_settled_after_holdover = false;
+/* Phase convergence as judged by servo_task (single writer; bools so other
+ * tasks never read a torn 64-bit offset). clockClass 6 is only (re)declared
+ * once the averaged phase is inside CLASS6_MAX_OFFSET_NS with a full averager
+ * and no rejects, and is withdrawn while it is beyond CLASS6_DEMOTE_NS or the
+ * servo is rejecting samples: a timer alone let the box advertise class 6
+ * while 100-300 us off after a holdover. */
+#define CLASS6_MAX_OFFSET_NS 10000LL
+#define CLASS6_DEMOTE_NS 50000LL
+#define CLASS6_DEMOTE_REJECTS 5
+static volatile bool g_phase_converged = false;
+static volatile bool g_phase_degraded = false;
 
 /* Latches true the first time the servo reaches SERVO_LOCKED with valid GNSS
  * time since boot. Until then the PHC has never held real time, so we must
@@ -755,10 +942,35 @@ static volatile bool g_ever_locked = false;
 
 /* ─── BMCA ─── */
 static bmca_dataset_t g_best_master = {0};
-static bool g_i_am_master = true;
+/* Boots NOT master (PTP LISTENING): nothing is transmitted until either a
+ * better master has been heard (stay PASSIVE) or no Announce has been heard
+ * for ANNOUNCE_TIMEOUT_SEC since the link came up (bmca_timeout_check ->
+ * MASTER). Booting as MASTER made every reboot transmit Sync with a PHC still
+ * at 1970 until three Announces from the other grandmaster had been heard. */
+static bool g_i_am_master = false;
 static bmca_dataset_t g_candidate_master = {0};
 static int g_candidate_count = 0;
 static time_t g_last_announce_rx = 0;
+
+/* Runtime-settable priority1/priority2 (POST /api/bmca/priority). RAM-only,
+ * NOT persisted to NVS: a reboot restores the defaults. Deliberate — NVS
+ * writes stall both cores' caches (rule 1.2.2 of the BMCA instrumentation
+ * handover), and NVS is not even initialised in this firmware. */
+#define PTP_PRIORITY1_DEFAULT 128
+#define PTP_PRIORITY2_DEFAULT 128
+static _Atomic uint8_t g_priority1 = PTP_PRIORITY1_DEFAULT;
+static _Atomic uint8_t g_priority2 = PTP_PRIORITY2_DEFAULT;
+
+/* Packed copy of the dataset last placed on the wire by send_announce():
+ * clock_class | accuracy<<8 | priority1<<16 | priority2<<24. Lets httpd
+ * report bmca.local while MASTER without calling build_local_dataset() (see
+ * the no-side-effects rule on advertised_clock_class()). 0 until the first
+ * Announce is sent (~2 s after boot). */
+static _Atomic uint32_t g_local_ds_packed = 0;
+
+/* Set (if ever enabled) at the commented-out ETH_CMD_S_PROMISCUOUS site in
+ * app_main. Real state for the JSON "promiscuous" field. */
+static bool g_promiscuous = false;
 
 /* ─── Slave tracking ─── */
 static slave_track_t g_slaves[SLAVE_TRACK_MAX] = {0};
@@ -846,16 +1058,40 @@ static volatile uint64_t g_last_progress_phc_s = 0;
 static volatile uint64_t g_last_progress_check_ms = 0;
 static volatile uint32_t g_emac_restart_count = 0;
 
+/* Heap baseline for the JSON heap_leak field — promoted out of
+ * heap_monitor_task's local so status_handler can read it. 0 = not yet
+ * measured (the task waits 10 s after boot before taking it). */
+static _Atomic uint32_t g_heap_baseline_free = 0;
+
+/* ─── Watchdog health, for the JSON "wdt" object ───
+ * Written only by watchdog_task, read by httpd. last_alert_uptime_s is
+ * uptime in whole SECONDS (not ms): _Atomic int64_t is not lock-free on this
+ * 32-bit RISC-V core, and a torn 64-bit read here would show a garbage
+ * "last alert" age on the dashboard. */
+typedef enum
+{
+    WDT_ARMING = 0,
+    WDT_OK,
+    WDT_PHC_FROZEN,
+    WDT_HEAP_CRITICAL,
+    WDT_RESTART_LIMIT
+} wdt_state_t;
+static _Atomic uint8_t g_wdt_state = WDT_ARMING;
+static _Atomic uint32_t g_wdt_alerts = 0;         /* count of checks that found a problem */
+static _Atomic uint32_t g_wdt_last_alert_s = 0;   /* uptime seconds, 0 = never */
+
 /* ─── Task handle ─── */
 static TaskHandle_t servo_task_handle = NULL;
 
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION: Forward declarations
  * ═════════════════════════════════════════════════════════════════════════ */
-static bool bmca_better(const bmca_dataset_t *a, const bmca_dataset_t *b);
+static int bmca_compare(const bmca_dataset_t *a, const bmca_dataset_t *b, bmca_field_t *field);
 static void announce_to_dataset(const ptp_announce_msg_t *ann, bmca_dataset_t *ds);
 static void bmca_update(const bmca_dataset_t *remote);
 static void handle_announce(const uint8_t *payload, size_t len);
+static const char *bmca_field_str(uint8_t f);
+static const char *bmca_reason_str(uint8_t r);
 static void emac_get_time(struct timespec *ts);
 static void pps_isr_handler(void *arg);
 static time_t my_timegm(struct tm *tm);
@@ -882,6 +1118,54 @@ static void delay_resp_task(void *arg);
  * appears after the servo/timing core that calls led_set_state. */
 void led_set_state(led_state_t new_state);
 void led_start(void);
+
+/* ═════════════════════════════════════════════════════════════════════════
+ * SECTION: Task stack registry
+ *
+ * uxTaskGetSystemState()/TaskStatus_t exposes each task's high-water mark
+ * but NOT the stack size it was created with, so the JSON "stack_bytes"
+ * field (used by the dashboard to compute % stack used) has to come from
+ * somewhere else. task_create_tracked() is a drop-in xTaskCreate() that also
+ * records the requested stack size here; status_handler looks it up by name.
+ * Tasks this file doesn't create itself ("main", "httpd") are registered
+ * directly with task_reg_add(). Unknown names resolve to JSON null — never
+ * an invented number.
+ * ═════════════════════════════════════════════════════════════════════════ */
+#define TASK_REG_MAX 24
+typedef struct
+{
+    char name[configMAX_TASK_NAME_LEN];
+    uint32_t stack_bytes;
+} task_reg_t;
+static task_reg_t g_task_reg[TASK_REG_MAX];
+static _Atomic uint32_t g_task_reg_n = 0;
+
+static void task_reg_add(const char *name, uint32_t stack_bytes)
+{
+    uint32_t i = atomic_load(&g_task_reg_n);
+    if (i >= TASK_REG_MAX)
+        return;
+    strlcpy(g_task_reg[i].name, name, sizeof(g_task_reg[i].name));
+    g_task_reg[i].stack_bytes = stack_bytes;
+    atomic_store(&g_task_reg_n, i + 1); /* publish after the entry is written */
+}
+
+static BaseType_t task_create_tracked(TaskFunction_t fn, const char *name,
+                                      uint32_t stack_bytes, void *arg,
+                                      UBaseType_t prio, TaskHandle_t *out)
+{
+    task_reg_add(name, stack_bytes);
+    return xTaskCreate(fn, name, stack_bytes, arg, prio, out);
+}
+
+static long task_reg_lookup(const char *name) /* -1 => unknown => JSON null */
+{
+    uint32_t n = atomic_load(&g_task_reg_n);
+    for (uint32_t i = 0; i < n; i++)
+        if (strcmp(g_task_reg[i].name, name) == 0)
+            return (long)g_task_reg[i].stack_bytes;
+    return -1;
+}
 
 /* ═════════════════════════════════════════════════════════════════════════
  * SECTION: Small helpers
@@ -968,22 +1252,46 @@ static inline void avg_reset(void)
         g_d_ring[i] = 0;
     g_d_count = 0;
     g_d_idx = 0;
+    /* an empty averager says nothing about convergence */
+    g_phase_converged = false;
+    g_phase_degraded = false;
 }
 
-static inline bool advertise_as_holdover(void)
+/* Read-only: should the clock advertise holdover (class 7) right now? Used by
+ * the display mirrors as-is; advertise_as_holdover() adds the latch. When
+ * can_latch is non-NULL it is set true once the settle window has passed AND
+ * the phase has converged. */
+static inline bool holdover_advert_ro(bool *can_latch)
 {
+    if (can_latch)
+        *can_latch = false;
     if (g_holdover)
         return true;
+    if (!g_seconds_agree)
+        return true; /* receiver and PHC disagree about the second */
     if (!g_settled_after_holdover)
     {
         int64_t now_ms = esp_timer_get_time() / 1000;
         if (g_lock_acquired_ms == 0)
-            return true; /* never locked yet */
+            return true; /* never locked yet / phase being realigned */
         if (now_ms - g_lock_acquired_ms < POST_HOLDOVER_SETTLE_MS)
             return true;
-        g_settled_after_holdover = true;
+        if (!g_phase_converged)
+            return true; /* settle time passed but the phase is not there yet */
+        if (can_latch)
+            *can_latch = true;
+        return false;
     }
-    return false;
+    return g_phase_degraded; /* settled, but currently off / rejecting */
+}
+
+static inline bool advertise_as_holdover(void)
+{
+    bool latch = false;
+    bool h = holdover_advert_ro(&latch);
+    if (latch)
+        g_settled_after_holdover = true;
+    return h;
 }
 
 /* PTP clockClass selection (IEEE 1588-2008 Table 5):
@@ -1002,7 +1310,7 @@ static inline uint8_t advertised_clock_class(void)
 
 static void build_local_dataset(bmca_dataset_t *ds)
 {
-    ds->priority1 = 128;
+    ds->priority1 = atomic_load(&g_priority1);
 
     // Dynamic depending on GNSS lock + post-holdover settling + never-locked
     uint8_t cc = advertised_clock_class();
@@ -1012,7 +1320,7 @@ static void build_local_dataset(bmca_dataset_t *ds)
                                                 : 0xFE;
 
     ds->variance = 0xFFFF;
-    ds->priority2 = 128;
+    ds->priority2 = atomic_load(&g_priority2);
     memcpy(ds->clock_id, g_clock_id, 8);
     ds->steps_removed = 0; /* we ARE the grandmaster of this dataset */
 }
@@ -1180,7 +1488,12 @@ static int l2tap_send_ptp(const void *ptp_payload, size_t ptp_len, struct timesp
  * clock identity) before letting a remote dataset influence the decision.
  * ═════════════════════════════════════════════════════════════════════════ */
 
-static bool bmca_better(const bmca_dataset_t *a, const bmca_dataset_t *b)
+/* Returns <0 if a is better than b, >0 if b is better, 0 if neither is better
+ * (same grandmaster AND same stepsRemoved). *field (optional) receives the
+ * comparison step that decided the result. Semantics are EXACTLY those of
+ * the previous bmca_better(): see the Figure 27/28 commentary below. */
+static int bmca_compare(const bmca_dataset_t *a, const bmca_dataset_t *b,
+                        bmca_field_t *field)
 {
     /* IEEE 1588-2008 data set comparison. When both datasets name the SAME
      * grandmaster ("part 2", Figure 28), every GM-quality field is by
@@ -1198,20 +1511,30 @@ static bool bmca_better(const bmca_dataset_t *a, const bmca_dataset_t *b)
      * With DIFFERENT grandmasters ("part 1", Figure 27), stepsRemoved is
      * deliberately NOT compared: the standard decides purely on GM quality
      * — priority1, class, accuracy, variance, priority2, then identity. */
-    if (memcmp(a->clock_id, b->clock_id, 8) == 0)
-        return a->steps_removed < b->steps_removed;
+    bmca_field_t f = BMCA_FIELD_NONE;
+    int r = 0;
 
-    if (a->priority1 != b->priority1)
-        return a->priority1 < b->priority1;
-    if (a->clock_class != b->clock_class)
-        return a->clock_class < b->clock_class;
-    if (a->accuracy != b->accuracy)
-        return a->accuracy < b->accuracy;
-    if (a->variance != b->variance)
-        return a->variance < b->variance;
-    if (a->priority2 != b->priority2)
-        return a->priority2 < b->priority2;
-    return memcmp(a->clock_id, b->clock_id, 8) < 0;
+    if (memcmp(a->clock_id, b->clock_id, 8) == 0)
+    {
+        f = BMCA_FIELD_STEPS_REMOVED;
+        if (a->steps_removed != b->steps_removed)
+            r = (a->steps_removed < b->steps_removed) ? -1 : 1;
+        /* equal stepsRemoved: r = 0 ("not better" — keep current state) */
+    }
+    else if (a->priority1 != b->priority1)     { f = BMCA_FIELD_PRIORITY1;    r = (a->priority1   < b->priority1)   ? -1 : 1; }
+    else if (a->clock_class != b->clock_class) { f = BMCA_FIELD_CLOCK_CLASS;  r = (a->clock_class < b->clock_class) ? -1 : 1; }
+    else if (a->accuracy != b->accuracy)       { f = BMCA_FIELD_ACCURACY;     r = (a->accuracy    < b->accuracy)    ? -1 : 1; }
+    else if (a->variance != b->variance)       { f = BMCA_FIELD_VARIANCE;     r = (a->variance    < b->variance)    ? -1 : 1; }
+    else if (a->priority2 != b->priority2)     { f = BMCA_FIELD_PRIORITY2;    r = (a->priority2   < b->priority2)   ? -1 : 1; }
+    else
+    {
+        f = BMCA_FIELD_CLOCK_IDENTITY;
+        r = (memcmp(a->clock_id, b->clock_id, 8) < 0) ? -1 : 1; /* ids differ here */
+    }
+
+    if (field)
+        *field = f;
+    return r;
 }
 
 static void announce_to_dataset(const ptp_announce_msg_t *ann, bmca_dataset_t *ds)
@@ -1225,21 +1548,65 @@ static void announce_to_dataset(const ptp_announce_msg_t *ann, bmca_dataset_t *d
     ds->steps_removed = ntohs(ann->steps_removed);
 }
 
+/* Single choke point for every write to g_i_am_master from ptp_rx_task's call
+ * tree (bmca_update() and the announce-timeout reclaim). Records a BMCA
+ * event into the ring + lifetime counter through the seqlock; a no-op role
+ * write (to_master == current) records nothing. No logging here — this runs
+ * on the receive hot path (rule 1.2.1); bmca_log_task drains the ring. */
+static void bmca_set_role(bool to_master, bmca_reason_t why,
+                          const uint8_t *peer_id, bmca_field_t decided_by)
+{
+    if (g_i_am_master == to_master)
+        return; /* not a change: record nothing */
+
+    g_i_am_master = to_master;
+
+    int64_t now_ms = esp_timer_get_time() / 1000 - g_boot_time_ms;
+
+    bmca_view_write_begin();
+    bmca_event_t *e = &g_bmca_view.ev[g_bmca_view.ev_next];
+    e->t_ms = now_ms;
+    e->to_master = to_master ? 1 : 0;
+    e->reason = (uint8_t)why;
+    e->decided_by = (uint8_t)decided_by;
+    e->peer_valid = (peer_id != NULL);
+    if (peer_id)
+        memcpy(e->peer_id, peer_id, 8);
+    else
+        memset(e->peer_id, 0, 8);
+    g_bmca_view.ev_next = (uint8_t)((g_bmca_view.ev_next + 1) % BMCA_EVENT_RING);
+    if (g_bmca_view.ev_count < BMCA_EVENT_RING)
+        g_bmca_view.ev_count++;
+    g_bmca_view.role_changes++;
+    bmca_view_write_end();
+}
+
 static void bmca_update(const bmca_dataset_t *remote)
 {
-    /* original master-side logic */
     bmca_dataset_t local;
     build_local_dataset(&local);
 
-    if (bmca_better(remote, &local))
+    bmca_field_t field;
+    bool remote_better = (bmca_compare(remote, &local, &field) < 0);
+
+    bmca_view_write_begin();
+    g_bmca_view.local = local;
+    g_bmca_view.local_valid = true;
+    g_bmca_view.peer = *remote;
+    g_bmca_view.peer_valid = true;
+    g_bmca_view.peer_better = remote_better;
+    g_bmca_view.decided_by = (uint8_t)field;
+    bmca_view_write_end();
+
+    if (remote_better)
     {
-        g_i_am_master = false;
         memcpy(&g_best_master, remote, sizeof(bmca_dataset_t));
+        bmca_set_role(false, BMCA_REASON_BETTER_ANNOUNCE, remote->clock_id, field);
     }
     else
     {
-        g_i_am_master = true;
         memcpy(&g_best_master, &local, sizeof(bmca_dataset_t));
+        bmca_set_role(true, BMCA_REASON_WORSE_ANNOUNCE, remote->clock_id, field);
     }
 }
 
@@ -1268,6 +1635,13 @@ static void handle_announce(const uint8_t *payload, size_t len)
         g_candidate_count = 1;
     }
 
+    bmca_view_write_begin();
+    memcpy(g_bmca_view.cand_id, g_candidate_master.clock_id, 8);
+    g_bmca_view.cand_count = (g_candidate_count > 255) ? 255 : (uint8_t)g_candidate_count;
+    g_bmca_view.cand_valid = true;
+    g_bmca_view.last_ann_rx_ms = esp_timer_get_time() / 1000 - g_boot_time_ms;
+    bmca_view_write_end();
+
     // Apply BMCA only after stability threshold
     if (g_candidate_count >= BMCA_STABILITY_THRESHOLD)
     {
@@ -1281,6 +1655,66 @@ static void handle_announce(const uint8_t *payload, size_t len)
     //          remote.clock_class,
     //          remote.accuracy,
     //          g_candidate_count);
+}
+
+/* String tables shared by the /api/bmca JSON writer (web_server.h) and
+ * bmca_log_task below. NULL means "emit JSON null" / "NONE". */
+static const char *bmca_field_str(uint8_t f)
+{
+    switch ((bmca_field_t)f)
+    {
+    case BMCA_FIELD_STEPS_REMOVED:  return "steps_removed";
+    case BMCA_FIELD_PRIORITY1:      return "priority1";
+    case BMCA_FIELD_CLOCK_CLASS:    return "clock_class";
+    case BMCA_FIELD_ACCURACY:       return "accuracy";
+    case BMCA_FIELD_VARIANCE:       return "variance";
+    case BMCA_FIELD_PRIORITY2:      return "priority2";
+    case BMCA_FIELD_CLOCK_IDENTITY: return "clock_identity";
+    case BMCA_FIELD_NONE:
+    default:                        return NULL;
+    }
+}
+
+static const char *bmca_reason_str(uint8_t r)
+{
+    switch ((bmca_reason_t)r)
+    {
+    case BMCA_REASON_BETTER_ANNOUNCE:  return "better_announce";
+    case BMCA_REASON_WORSE_ANNOUNCE:   return "worse_announce";
+    case BMCA_REASON_ANNOUNCE_TIMEOUT: return "announce_timeout";
+    default:                           return NULL;
+    }
+}
+
+/* Role-change logging, off the receive hot path (rule 1.2.1: no ESP_LOG* in
+ * ptp_rx_task or anything it calls). Polls the seqlock every 500 ms and
+ * prints any ring events not yet printed. If more than BMCA_EVENT_RING
+ * changes happened within one 500 ms window, the oldest of that burst are
+ * not printed (they are still counted in role_changes). */
+static void bmca_log_task(void *arg)
+{
+    uint32_t printed = 0;
+    bmca_view_t v;
+    for (;;)
+    {
+        vTaskDelay(pdMS_TO_TICKS(500));
+        if (!bmca_view_snapshot(&v) || v.role_changes == printed)
+            continue;
+        uint32_t missed = v.role_changes - printed;
+        uint32_t n = missed > v.ev_count ? v.ev_count : missed;
+        for (uint32_t k = n; k > 0; k--) /* oldest first */
+        {
+            int idx = ((int)v.ev_next - (int)k + BMCA_EVENT_RING) % BMCA_EVENT_RING;
+            const bmca_event_t *e = &v.ev[idx];
+            const char *reason = bmca_reason_str(e->reason);
+            const char *field = bmca_field_str(e->decided_by);
+            ESP_LOGW("BMCA", "t=%lld ms -> %s reason=%s decided_by=%s peer=%02X%02X..%02X%02X",
+                     (long long)e->t_ms, e->to_master ? "MASTER" : "PASSIVE",
+                     reason ? reason : "?", field ? field : "none",
+                     e->peer_id[0], e->peer_id[1], e->peer_id[6], e->peer_id[7]);
+        }
+        printed = v.role_changes;
+    }
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
@@ -1553,13 +1987,23 @@ static void send_announce(void)
     // ✅ REQUIRED for ptp4l
     ann.current_utc_offset = htons(g_utc_offset);
 
-    ann.grandmaster_priority1 = 128;
+    uint8_t p1 = atomic_load(&g_priority1);
+    uint8_t p2 = atomic_load(&g_priority2);
+    ann.grandmaster_priority1 = p1;
     ann.grandmaster_clock_variance = htons(0xFFFF);
-    ann.grandmaster_priority2 = 128;
+    ann.grandmaster_priority2 = p2;
 
     memcpy(ann.grandmaster_identity, g_clock_id, 8);
 
     l2tap_send_ptp(&ann, sizeof(ann), NULL);
+
+    /* Publish the dataset just placed on the wire for bmca.local (MASTER
+     * case) — one atomic_store, no seqlock: this is the only writer and the
+     * value is a single 32-bit word. variance is always the 0xFFFF constant
+     * above, so it isn't packed here. */
+    uint32_t packed = (uint32_t)cc | ((uint32_t)ann.grandmaster_clock_accuracy << 8) |
+                      ((uint32_t)p1 << 16) | ((uint32_t)p2 << 24);
+    atomic_store(&g_local_ds_packed, packed);
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
@@ -1764,6 +2208,7 @@ static bool parse_rmc(const char *line)
     taskENTER_CRITICAL(&g_gnss_spinlock);
     g_gnss_seconds = utc;
     g_gnss_valid = true;
+    g_last_rmc_ms = esp_timer_get_time() / 1000;
     taskEXIT_CRITICAL(&g_gnss_spinlock);
 
     g_last_gnss_update = time(NULL);
@@ -2258,6 +2703,18 @@ static void pps_task(void *arg)
             if (seq == last_capture_seq)
                 continue; /* spurious wake — no new edge */
             last_capture_seq = seq;
+
+            /* Edge regularity: ~1 s after the previous edge (monotonic time). */
+            static int64_t prev_edge_mono_us = 0;
+            int64_t edge_mono_us = esp_timer_get_time();
+            bool edge_regular = false;
+            if (prev_edge_mono_us != 0)
+            {
+                int64_t d_us = edge_mono_us - prev_edge_mono_us;
+                edge_regular = (d_us > 1000000LL - PPS_REGULAR_TOL_US) &&
+                               (d_us < 1000000LL + PPS_REGULAR_TOL_US);
+            }
+            prev_edge_mono_us = edge_mono_us;
             uint64_t phc_s = phc_ns / 1000000000ULL;
 
             /* ── PPS edge-to-edge jitter (raw receiver timing noise) ──
@@ -2292,97 +2749,107 @@ static void pps_task(void *arg)
             taskENTER_CRITICAL(&g_gnss_spinlock);
             time_t gnss_sec = g_gnss_seconds;
             bool gnss_valid = g_gnss_valid;
+            int64_t rmc_ms = g_last_rmc_ms;
             taskEXIT_CRITICAL(&g_gnss_spinlock);
+            /* A fix is only as good as its freshness (see GNSS_FRESH_MS). */
+            if (gnss_valid && (esp_timer_get_time() / 1000 - rmc_ms) > GNSS_FRESH_MS)
+                gnss_valid = false;
+
+            /* Trusted edge: regular spacing AND GNSS time advanced by exactly 1 s
+             * since the previous edge (a lone bad-time sentence fails this on its
+             * own edge and on the next one). */
+            static bool prev_edge_gnss_valid = false;
+            static time_t prev_edge_gnss_sec = 0;
+            bool edge_trusted = edge_regular && gnss_valid && prev_edge_gnss_valid &&
+                                (gnss_sec == prev_edge_gnss_sec + 1);
+            prev_edge_gnss_valid = gnss_valid;
+            prev_edge_gnss_sec = gnss_sec;
 
             ESP_LOGD("PPS_DIAG",
-                     "phc_s=%llu gnss_sec=%lld so=%d",
+                     "phc_s=%llu gnss_sec=%lld",
                      (unsigned long long)phc_s,
-                     (long long)gnss_sec,
-                     g_sentence_offset);
+                     (long long)gnss_sec);
 
-            bool log_bootstrap = false;
-            bool log_so_determined = false;
-            bool log_correction = false;
-            int64_t log_so_val = 0;
-            int64_t log_err = 0;
-            uint64_t log_target = 0;
+            /* Phase and second of this edge, as the PHC sees them. */
+            int64_t nearest_ns = (((int64_t)phc_ns + 500000000LL) / 1000000000LL) * 1000000000LL;
+            int64_t phase_ns = (int64_t)phc_ns - nearest_ns; /* within +-0.5 s */
+            int64_t phc_label_s = nearest_ns / 1000000000LL;
+            static uint32_t label_gen = UINT32_MAX;
+            static int64_t prev_label_s = 0;
+            bool log_fix = false;
+            int32_t log_diff = 0;
+            uint32_t log_n = 0;
 
             taskENTER_CRITICAL(&g_servo_spinlock);
-
             g_last_pps_phc_ns = phc_ns;
+            g_last_pps_trusted = edge_trusted;
+            g_last_pps_regular = edge_regular;
             g_pps_edge_count++;
-
-            if (gnss_valid)
+            bool plausible = true;
+            if (g_phc_stepped)
             {
-                if (g_sentence_offset < 0 && g_phc_stepped)
+                /* Second continuity: a real edge advances the PHC second by 1, or by
+                 * more after missing edges, or by 0 for an extra (glitch) edge. A
+                 * second going backwards or jumping absurdly far is a garbage PHC
+                 * capture (e.g. read during an EMAC restart): mark it implausible so
+                 * the servo skips it, and keep the history unchanged. */
+                if (g_phc_step_gen == label_gen)
                 {
-                    int64_t delta = (int64_t)phc_s - ((int64_t)gnss_sec + (int64_t)g_utc_offset);
-                    if (delta < 0 || delta > 2)
-                        delta = 1;
-                    g_sentence_offset = (int)delta;
-                    log_so_determined = true;
-                    log_so_val = delta;
+                    int64_t step_s = phc_label_s - prev_label_s;
+                    if (step_s < 0 || step_s > 86400)
+                        plausible = false;
+                    else if (step_s == 0)
+                        g_pps_coast_extra++;
+                    else if (step_s > 1)
+                        g_pps_coast_missing += (uint32_t)(step_s - 1);
                 }
-
-                if (g_sentence_offset < 0)
+                if (plausible)
                 {
-                    taskEXIT_CRITICAL(&g_servo_spinlock);
-                    goto do_logging;
-                }
-
-                uint64_t gnss_target =
-                    ((uint64_t)gnss_sec + (uint64_t)g_utc_offset + (uint64_t)g_sentence_offset) * 1000000000ULL;
-
-                if (!g_gnss_pps_valid)
-                {
-                    g_gnss_pps_ns = gnss_target;
-                    g_gnss_pps_valid = true;
-                    log_bootstrap = true;
-                    log_target = gnss_target;
-                }
-                else
-                {
-                    uint64_t expected = g_gnss_pps_ns + 1000000000ULL;
-                    int64_t err = (int64_t)gnss_target - (int64_t)expected;
-
-                    if (llabs(err) > 5000000000LL)
+                    label_gen = g_phc_step_gen;
+                    prev_label_s = phc_label_s;
+                    if (gnss_valid)
+                        g_phc_offset_ns = phase_ns;
+                    /* Seconds checker: does the receiver agree with the PHC? */
+                    if (gnss_valid && edge_trusted)
                     {
-                        g_gnss_pps_ns += 1000000000ULL;
-                    }
-                    else
-                    {
-                        g_gnss_pps_ns = gnss_target;
-                        log_target = gnss_target;
-                        log_err = err;
-                        if (llabs(err) > 10000000LL)
-                            log_correction = true;
+                        int64_t nmea_s = (int64_t)gnss_sec + (int64_t)g_utc_offset + GNSS_SENTENCE_OFFSET;
+                        int32_t diff = (int32_t)(nmea_s - phc_label_s);
+                        if (diff == 0)
+                        {
+                            g_seconds_agree = true;
+                            g_seconds_diff = 0;
+                            g_seconds_disagree_n = 0;
+                        }
+                        else
+                        {
+                            if (diff == g_seconds_diff)
+                                g_seconds_disagree_n++;
+                            else
+                            {
+                                g_seconds_diff = diff;
+                                g_seconds_disagree_n = 1;
+                            }
+                            g_seconds_agree = false;
+                            uint32_t confirm = g_ever_locked ? SECONDS_CONFIRM_LOCKED_S : SECONDS_CONFIRM_BOOT_S;
+                            if (g_seconds_disagree_n >= confirm && g_seconds_fix_req == 0)
+                            {
+                                g_seconds_fix_req = diff;
+                                log_fix = true;
+                                log_diff = diff;
+                                log_n = g_seconds_disagree_n;
+                            }
+                        }
                     }
                 }
-
-                if (g_gnss_pps_valid)
-                    g_phc_offset_ns = (int64_t)phc_ns - (int64_t)g_gnss_pps_ns;
             }
-            else
-            {
-                if (g_gnss_pps_valid)
-                    g_gnss_pps_ns += 1000000000ULL;
-            }
-
+            g_last_pps_plausible = plausible;
             taskEXIT_CRITICAL(&g_servo_spinlock);
-
-        do_logging:
-            if (log_bootstrap)
-                ESP_LOGI("PPS", "Bootstrap: TAI target=%llu s",
-                         (unsigned long long)(log_target / 1000000000ULL));
-            if (log_so_determined)
-                ESP_LOGI("PPS",
-                         "sentence_offset=%lld (sentence arrives %s PPS edge)",
-                         log_so_val,
-                         log_so_val == 0 ? "BEFORE" : "AFTER");
-            if (log_correction)
-                ESP_LOGW("PPS", "GNSS correction: target=%llu err=%lld ns",
-                         (unsigned long long)(log_target / 1000000000ULL),
-                         (long long)log_err);
+            if (!plausible)
+                ESP_LOGW("PPS", "implausible PHC second at this edge (%lld after %lld) -- edge skipped",
+                         (long long)phc_label_s, (long long)prev_label_s);
+            if (log_fix)
+                ESP_LOGW("PPS", "receiver and PHC disagree by %ld s for %lu checks -- PHC to be stepped by whole seconds",
+                         (long)log_diff, (unsigned long)log_n);
 
             if (servo_task_handle != NULL)
                 xTaskNotifyGive(servo_task_handle);
@@ -2424,10 +2891,19 @@ static void servo_task(void *arg)
     static int stable_count = 0;
     static int measure_count = 0;
     static int64_t offset_acc = 0;
+    static int64_t acq_prev = 0, acq_jump = 0; /* ACQUIRE-A: previous sample, largest sample-to-sample change */
     static int64_t prev_acq_offset = INT64_MIN;
-    static int acq_rail_streak = 0;  /* consecutive ACQUIRING samples beyond MAX_STEP_NS */
     static int acq_sample_count = 0; /* accepted ACQUIRING samples since last transition */
-    uint32_t pps_edges_at_holdover_entry = 0;
+    static int64_t acq_win[LOCK_WIN_N]; /* last ACQUIRING offsets (ring) */
+    static double acq_win_f[LOCK_WIN_N]; /* frequency applied after each of those samples */
+    static int acq_win_n = 0;           /* samples in the ring */
+    static int acq_win_i = 0;           /* next write index */
+    static int acq_win_seen = 0;        /* samples since acquisition (re)started */
+    static bool realign_pending = false;  /* holdover exit: phase to be realigned */
+    static int realign_n = 0;
+    static int64_t realign_buf[REALIGN_SAMPLES];
+    static int64_t realign_start_ms = 0;
+    static int realign_slew_left = 0;     /* servo cycles of frequency slew still to run */
     int64_t lock_start_at_holdover_entry = 0; /* preserve lock duration across sentence-only outages */
 
 #define MEASURE_TICKS 5
@@ -2444,9 +2920,60 @@ static void servo_task(void *arg)
 
         taskENTER_CRITICAL(&g_servo_spinlock);
         uint64_t pps = g_last_pps_phc_ns;
-        uint64_t gnss_pps_snap = g_gnss_pps_ns;
-        bool gnss_pps_valid_snap = g_gnss_pps_valid;
+        bool pps_trusted_snap = g_last_pps_trusted;
+        bool pps_plausible_snap = g_last_pps_plausible;
+        bool pps_regular_snap = g_last_pps_regular;
+        int32_t sec_fix = g_seconds_fix_req;
+        g_seconds_fix_req = 0;
         taskEXIT_CRITICAL(&g_servo_spinlock);
+
+        /* Seconds checker asked for a whole-second correction (the receiver
+         * disagreed with the PHC long enough): step the PHC by whole seconds,
+         * relative to its current value. The write latency leaves a few tens of
+         * us of phase error, which the realign below (LOCKED) or the acquisition
+         * (ACQUIRING) removes; class 7 until then. */
+        if (sec_fix != 0)
+        {
+            struct timespec ts_fix;
+            emac_get_time(&ts_fix);
+            int64_t fix_ns = (int64_t)ts_fix.tv_sec * 1000000000LL + ts_fix.tv_nsec + (int64_t)sec_fix * 1000000000LL;
+            eth_mac_time_t t_fix = {
+                .seconds = (uint32_t)(fix_ns / 1000000000LL),
+                .nanoseconds = (uint32_t)(fix_ns % 1000000000LL),
+            };
+            if (servo_phc_ioctl(ETH_MAC_ESP_CMD_S_PTP_TIME, &t_fix))
+            {
+                taskENTER_CRITICAL(&g_servo_spinlock);
+                g_phc_step_gen++;
+                g_seconds_agree = false; /* the next check confirms the new second */
+                g_seconds_diff = 0;
+                g_seconds_disagree_n = 0;
+                taskEXIT_CRITICAL(&g_servo_spinlock);
+                ESP_LOGW("SERVO", "PHC stepped by %ld s to the receiver's second", (long)sec_fix);
+                g_settled_after_holdover = false; /* class 7 until realigned and settled again */
+                if (state == SERVO_LOCKED && !g_holdover)
+                {
+                    avg_reset();
+                    median_filter_reset();
+                    g_last_offset = 0;
+                    g_consecutive_rejects = 0;
+                    memset(g_lock_qual_ring, 0, sizeof(g_lock_qual_ring));
+                    g_lock_qual_idx = 0;
+                    g_lock_qual_count = 0;
+                    g_lock_acquired_ms = 0;
+                    realign_pending = true;
+                    realign_slew_left = 0;
+                    realign_n = 0;
+                    realign_start_ms = esp_timer_get_time() / 1000;
+                }
+            }
+            else
+            {
+                taskENTER_CRITICAL(&g_servo_spinlock);
+                g_seconds_fix_req = sec_fix; /* EMAC restarting: try again next cycle */
+                taskEXIT_CRITICAL(&g_servo_spinlock);
+            }
+        }
 
         bool new_pps = (pps != last_pps);
         if (new_pps)
@@ -2476,145 +3003,47 @@ static void servo_task(void *arg)
 
             g_settled_after_holdover = false;
             g_lock_acquired_ms = 0;
-            pps_edges_at_holdover_entry = g_pps_edge_count;
+            realign_pending = false;
+            realign_slew_left = 0;
         }
 
         if (!g_holdover && prev_holdover)
         {
-            bool pps_was_alive = (g_pps_edge_count != pps_edges_at_holdover_entry);
-
-            if (pps_was_alive)
+            /* GNSS is back. The PHC kept its second through the outage (with or
+             * without PPS: it free-ran on the held frequency), so there is no
+             * reason to start over -- only the phase may have drifted. Re-seat the
+             * phase working buffers, keep the frequency, and (if LOCKED) realign the
+             * phase before resuming the loop. If the receiver now reports a
+             * different second, the seconds checker holds class 7 meanwhile. */
+            ESP_LOGW("SERVO", "GNSS lock restored -- preserving freq, re-seating phase averager");
+            avg_reset(); /* clears g_avg_* AND the paired g_d_* */
+            median_filter_reset();
+            g_last_offset = 0;
+            g_consecutive_rejects = 0;
+            memset(g_lock_qual_ring, 0, sizeof(g_lock_qual_ring));
+            g_lock_qual_idx = 0;
+            g_lock_qual_count = 0;
+            g_qual_raw_min = INT64_MAX;
+            g_qual_raw_max = INT64_MIN;
+            g_qual_raw_samples = 0;
+            if (state == SERVO_LOCKED)
             {
-                /* Sentence-only outage. The integrator and g_freq_ppb hold the
-                 * learned crystal-drift correction (~46M ns·s on this hardware)
-                 * — that's why the previous hour stayed locked. PRESERVE them;
-                 * the crystal's frequency did not change while sentences were
-                 * missing, only the sentence stream paused.
-                 *
-                 * BUT the phase baseline is now stale. During holdover,
-                 * pps_task advanced g_gnss_pps_ns by a blind +1e9 per PPS edge
-                 * while the PHC free-ran (frozen integrator, no correction
-                 * applied). Over a multi-minute / multi-hour outage these
-                 * diverge by tens of ms. On the first GNSS sentence after
-                 * recovery, pps_task re-snaps g_gnss_pps_ns to true GNSS time
-                 * (g_gnss_pps_ns = gnss_target), stepping the reference by that
-                 * accumulated divergence in a single tick. The 32-sample
-                 * averager, however, still holds the PRE-holdover baseline, so
-                 * every post-resume raw_offset lands far from the running mean
-                 * → if the step exceeds HARD_REJECT_NS, the SERVO_LOCKED reject
-                 * gate throws away every sample and the averager can never
-                 * update: a permanent stale-reference wedge (the failure that
-                 * froze Adj/Offset/I on the OLED).
-                 *
-                 * Fix: re-seat ONLY the phase working buffers (averager, D-ring,
-                 * median filter, lock-quality ring, reject streak, raw-spread
-                 * bounds) so the reject gate re-centres on the live reference.
-                 * Frequency state (g_integral, g_freq_ppb) is untouched, so the
-                 * servo resumes at the correct crystal-drift rate and walks out
-                 * the residual phase error via the slew-rate-limited output —
-                 * no PHC step, no lock drop, slaves see only a gentle
-                 * correction. Re-seating is unconditional here: it is also
-                 * correct when the reference step is below HARD_REJECT_NS (which
-                 * would otherwise be silently absorbed into the average as a
-                 * real phase error). */
-                ESP_LOGW("SERVO",
-                         "GNSS lock restored (PPS continuous) — preserving freq, "
-                         "re-seating phase averager");
-
-                avg_reset(); /* clears g_avg_* AND the paired g_d_* */
-                median_filter_reset();
-                g_last_offset = 0;
-                g_consecutive_rejects = 0;
-                memset(g_lock_qual_ring, 0, sizeof(g_lock_qual_ring));
-                g_lock_qual_idx = 0;
-                g_lock_qual_count = 0;
-                g_qual_raw_min = INT64_MAX;
-                g_qual_raw_max = INT64_MIN;
-                g_qual_raw_samples = 0;
-
-                /* PRESERVED (deliberately untouched): state, g_phc_stepped,
-                 * g_phc_residual_measured, g_gnss_pps_valid, g_integral,
-                 * g_freq_ppb. */
-
-                if (state == SERVO_LOCKED)
-                {
-                    /* LED was set to HOLDOVER on entry; restore it now. */
-                    led_set_state(LED_STATE_LOCKED);
-
-                    /* PPS was continuous through the outage, so lock was never
-                     * truly lost — restore the original lock-start timestamp so the
-                     * displayed lock duration counts through the blip rather than
-                     * resetting. This also un-sticks screen 2's lock-duration line
-                     * (the > 0 gate) so it stops showing "(not locked)" while
-                     * screen 1 shows LOCKED.
-                     *
-                     * g_lock_acquired_ms, by contrast, is restamped to NOW (not
-                     * restored): we just re-seated the phase averager, so the
-                     * POST_HOLDOVER_SETTLE_MS window for advertise_as_holdover()
-                     * should re-arm from this moment, not from the original lock. */
-                    g_lock_start_ms = (lock_start_at_holdover_entry > 0)
-                                          ? lock_start_at_holdover_entry
-                                          : esp_timer_get_time() / 1000;
-                    g_lock_acquired_ms = esp_timer_get_time() / 1000;
-                }
-                else
-                {
-                    /* Holdover began before this cycle ever reached LOCKED —
-                     * e.g. the fix flapped right after the COARSE STEP (an
-                     * invalid fix flags holdover immediately). There is no
-                     * lock to restore, and claiming LOCKED here made the LED
-                     * lie for the remainder of the acquisition. */
-                    led_set_state(LED_STATE_ACQUIRING);
-                }
+                led_set_state(LED_STATE_LOCKED);
+                /* The PHC kept time through the outage: count the lock duration
+                 * through it. g_lock_acquired_ms re-arms when the realign is done. */
+                g_lock_start_ms = (lock_start_at_holdover_entry > 0)
+                                      ? lock_start_at_holdover_entry
+                                      : esp_timer_get_time() / 1000;
+                g_lock_acquired_ms = 0;
+                realign_pending = true;
+                realign_n = 0;
+                realign_start_ms = esp_timer_get_time() / 1000;
             }
             else
             {
-                /* True PPS outage (USB power cycle, PPS wire break, receiver
-                 * power loss). g_gnss_pps_ns and PHC are no longer related to
-                 * GNSS time — full re-acquire from scratch. */
-                ESP_LOGW("SERVO",
-                         "GNSS lock restored (PPS was lost) — re-acquiring from scratch");
-                state = SERVO_UNLOCKED;
-                /* g_phc_stepped, g_gnss_pps_valid and g_sentence_offset are
-                 * read (and written) by pps_task inside g_servo_spinlock
-                 * sections on the other core. Reset them under the same lock
-                 * so pps_task can never observe a half-applied reset — e.g.
-                 * re-bootstrapping the reference between the stores.
-                 *
-                 * g_sentence_offset is reset because the receiver was power-
-                 * cycled (that's what a true PPS outage means): its sentence
-                 * timing relative to the PPS edge may have changed, and a
-                 * stale offset would make the fresh acquisition converge a
-                 * full second off TAI. With g_phc_stepped false, pps_task
-                 * re-derives it on the first edge after the next COARSE
-                 * STEP — the same sequencing as first boot, at zero cost. */
-                taskENTER_CRITICAL(&g_servo_spinlock);
-                g_phc_stepped = false;
-                g_gnss_pps_valid = false;
-                g_sentence_offset = -1;
-                taskEXIT_CRITICAL(&g_servo_spinlock);
-                g_phc_residual_measured = false;
-                g_integral = 0;
-                g_freq_ppb = 0;
-                stable_count = 0;
-                prev_acq_offset = INT64_MIN;
-                measure_count = 0;
-                offset_acc = 0;
-                median_filter_reset();
-                avg_reset();
-                g_last_offset = 0;
-
-                /* Only the true-outage path resets lock tracking + LED. */
-                g_lock_start_ms = esp_timer_get_time() / 1000;
-                memset(g_lock_qual_ring, 0, sizeof(g_lock_qual_ring));
-                g_lock_qual_idx = 0;
-                g_lock_qual_count = 0;
                 led_set_state(LED_STATE_ACQUIRING);
-                g_lock_acquired_ms = 0;
-                g_settled_after_holdover = false;
             }
         }
-
         prev_holdover = g_holdover;
 
         if (!new_pps)
@@ -2631,6 +3060,16 @@ static void servo_task(void *arg)
                 continue;
             }
 
+            /* Coarse-step only on a trusted edge (see g_last_pps_trusted): on a
+             * glitch edge, or with a bad-time sentence, the PHC would be set on
+             * the wrong second and the sentence offset derived from it would be
+             * 1 s off for the rest of the uptime. */
+            if (!pps_trusted_snap)
+            {
+                ESP_LOGW("SERVO", "UNLOCKED: PPS edge not trusted (spacing or GNSS second) -- waiting for the next edge");
+                continue;
+            }
+
             ESP_LOGW("SERVO", "UNLOCKED → ACQUIRING");
             led_set_state(LED_STATE_ACQUIRING);
 
@@ -2639,7 +3078,8 @@ static void servo_task(void *arg)
             measure_count = 0;
             offset_acc = 0;
             prev_acq_offset = INT64_MIN;
-            acq_rail_streak = 0;
+            acq_win_n = 0;
+            acq_win_seen = 0;
             acq_sample_count = 0;
             g_integral = 0;
 
@@ -2658,11 +3098,14 @@ static void servo_task(void *arg)
 
             servo_phc_ioctl(ETH_MAC_ESP_CMD_S_PTP_TIME, &t);
 
-            /* Published under the spinlock: pps_task reads g_phc_stepped
-             * inside its own g_servo_spinlock section (on the other core)
-             * to decide when to determine sentence_offset. */
+            /* The PHC now holds real time. Published under the spinlock that
+             * pps_task (other core) uses; the seconds history starts over. */
             taskENTER_CRITICAL(&g_servo_spinlock);
             g_phc_stepped = true;
+            g_phc_step_gen++;
+            g_seconds_agree = true;
+            g_seconds_diff = 0;
+            g_seconds_disagree_n = 0;
             taskEXIT_CRITICAL(&g_servo_spinlock);
 
             continue;
@@ -2670,59 +3113,13 @@ static void servo_task(void *arg)
 
         case SERVO_ACQUIRING:
         {
-            /* Reference-valid gate. pps_task only bootstraps g_gnss_pps_ns
-             * while the GNSS fix is valid, but it notifies this task on
-             * every edge regardless. If the fix flapped invalid between the
-             * COARSE STEP and this tick, the reference is still 0: an offset
-             * computed against it (~1.7e18 ns) would feed ACQUIRE-A a
-             * garbage average and step the PHC to the 1970 epoch — with no
-             * exit from ACQUIRING to ever recover. Skip edges until the
-             * reference exists. */
-            if (!gnss_pps_valid_snap)
-            {
-                static uint32_t ref_skip_count = 0;
-                if ((ref_skip_count++ & 0x1F) == 0) /* ~1 line per 32 s of flap */
-                    ESP_LOGW("SERVO",
-                             "ACQUIRING: GNSS PPS reference not bootstrapped "
-                             "(fix not valid) — skipping edge");
+            if (!pps_plausible_snap)
+                continue; /* garbage PHC capture (see pps_task) */
+            /* A glitch edge (and the real edge right after it) is irregularly
+             * spaced: never let it into the acquisition average or the PI. */
+            if (!pps_regular_snap)
                 continue;
-            }
-
-            int64_t offset = (int64_t)pps - (int64_t)gnss_pps_snap;
-
-            /* Sanity rail (MAX_STEP_NS). Never feed a beyond-rail sample to
-             * ACQUIRE-A/B: a lone outlier (e.g. a PPS edge captured during
-             * an EMAC restart window reads the PHC as ~0) is skipped, and a
-             * persistent divergence — which the slew-limited servo could
-             * never walk out and ACQUIRE-A would "fix" by stepping the PHC
-             * to garbage — forces a clean restart of the acquisition. */
-            if (llabs(offset) > MAX_STEP_NS)
-            {
-                acq_rail_streak++;
-                ESP_LOGE("SERVO",
-                         "ACQUIRING: offset %lld ns beyond sanity rail (strike %d/%d)",
-                         (long long)offset, acq_rail_streak, ACQ_RAIL_STRIKES);
-                if (acq_rail_streak >= ACQ_RAIL_STRIKES)
-                {
-                    ESP_LOGE("SERVO",
-                             "ACQUIRING: PHC/reference divergence is persistent "
-                             "— restarting acquisition from UNLOCKED");
-                    acq_rail_streak = 0;
-                    state = SERVO_UNLOCKED;
-                    g_phc_residual_measured = false;
-                    g_integral = 0;
-                    g_freq_ppb = 0;
-                    stable_count = 0;
-                    prev_acq_offset = INT64_MIN;
-                    measure_count = 0;
-                    offset_acc = 0;
-                    median_filter_reset();
-                    avg_reset();
-                    g_last_offset = 0;
-                }
-                continue;
-            }
-            acq_rail_streak = 0;
+            int64_t offset = (int64_t)pps - (((int64_t)pps + 500000000LL) / 1000000000LL) * 1000000000LL;
 
             /* ACQUIRING deliberately has NO convergence timeout. On noisy
              * PPS the lock gates (5 µs phase / 2 µs freq delta, 9
@@ -2731,8 +3128,8 @@ static void servo_task(void *arg)
              * — a forced re-step would only throw that progress away and
              * step the PHC under any slave already following. The inputs
              * that used to wedge this state are all gated upstream now
-             * (reference-valid gate + sanity rail above, NMEA checksum,
-             * ISR restart gate), so a long acquisition means signal
+             * (PHC-plausibility gate above, NMEA checksum, ISR restart
+             * gate), so a long acquisition means signal
              * quality is the limit. Surface that instead of "fixing" it:
              * warn every ~5 minutes of continuous acquisition. */
             if (++acq_sample_count % 300 == 0)
@@ -2752,11 +3149,31 @@ static void servo_task(void *arg)
                     continue;
                 }
 
+                if (measure_count == 1)
+                    acq_jump = 0; /* first sample of a new set */
+                else if (llabs(offset - acq_prev) > acq_jump)
+                    acq_jump = llabs(offset - acq_prev);
+                acq_prev = offset;
                 offset_acc += offset;
                 measure_count++;
 
                 if (measure_count - 1 >= MEASURE_TICKS)
                 {
+                    /* Step only on a consistent set: no sample-to-sample change beyond
+                     * ACQ_A_JUMP_NS. A free crystal drifting steadily changes the offset by
+                     * a constant small amount per second (~46 us here; anything up to
+                     * 1000 ppm passes), but a jump of the reference inside the set -- which
+                     * averaged to a fraction of the jump and left the PHC far off -- is
+                     * caught, and a fresh set is collected. */
+                    if (acq_jump > ACQ_A_JUMP_NS)
+                    {
+                        ESP_LOGW("SERVO",
+                                 "ACQUIRE-A: reference jumped %lld ns inside the sample set -- collecting again",
+                                 (long long)acq_jump);
+                        measure_count = 1; /* first-sample discard already done */
+                        offset_acc = 0;
+                        continue;
+                    }
                     int64_t avg_offset = offset_acc / MEASURE_TICKS;
 
                     ESP_LOGW("SERVO",
@@ -2773,6 +3190,9 @@ static void servo_task(void *arg)
                     };
 
                     servo_phc_ioctl(ETH_MAC_ESP_CMD_S_PTP_TIME, &t);
+                    taskENTER_CRITICAL(&g_servo_spinlock);
+                    g_phc_step_gen++;
+                    taskEXIT_CRITICAL(&g_servo_spinlock);
 
                     g_phc_residual_measured = true;
                     measure_count = 0;
@@ -2780,26 +3200,6 @@ static void servo_task(void *arg)
                 }
                 continue;
             }
-
-            // Before refinement with anti wind up via back calculation - Refer to Anti windup.MD
-            // Can be removed after new code is tested for a while under different conditions
-            // if (!g_holdover)
-            //     g_integral += (double)offset;
-            // if (g_integral > SERVO_INTEGRAL_LIMIT)
-            //     g_integral = SERVO_INTEGRAL_LIMIT;
-            // if (g_integral < -SERVO_INTEGRAL_LIMIT)
-            //     g_integral = -SERVO_INTEGRAL_LIMIT;
-
-            // double correction_acq =
-            //     SERVO_KP * (double)offset + SERVO_KI * g_integral;
-            // g_freq_ppb = -correction_acq;
-            // if (g_freq_ppb > SERVO_FREQ_LIMIT_PPB)
-            //     g_freq_ppb = SERVO_FREQ_LIMIT_PPB;
-            // if (g_freq_ppb < -SERVO_FREQ_LIMIT_PPB)
-            //     g_freq_ppb = -SERVO_FREQ_LIMIT_PPB;
-
-            // int32_t adj_acq_ppb = (int32_t)g_freq_ppb;
-            // servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_acq_ppb);
 
             /* ── Integrate with anti-windup ──────────────────────────────────
              * Tentatively integrate, compute the unsaturated correction, then
@@ -2874,15 +3274,68 @@ static void servo_task(void *arg)
             if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_acq_ppb))
                 atomic_store(&g_freq_ppb_hw, adj_acq_ppb);
 
+            acq_win[acq_win_i] = offset;
+            acq_win_f[acq_win_i] = g_freq_ppb;
+            acq_win_i = (acq_win_i + 1) % LOCK_WIN_N;
+            if (acq_win_n < LOCK_WIN_N)
+                acq_win_n++;
+            if (acq_win_seen < LOCK_WIN_GRACE)
+                acq_win_seen++;
+            bool win_ok = false;
+            double win_mean = 0.0, win_slope = 0.0, win_freq = 0.0;
+            if (acq_win_n == LOCK_WIN_N && acq_win_seen >= LOCK_WIN_GRACE && !g_holdover)
+            {
+                double sy = 0.0, sxy = 0.0, sf = 0.0;
+                bool in_band = true;
+                for (int k = 0; k < LOCK_WIN_N; k++)
+                {
+                    int64_t yi = acq_win[(acq_win_i + k) % LOCK_WIN_N]; /* oldest first */
+                    if (llabs(yi) >= LOCK_WIN_MAX_NS)
+                        in_band = false;
+                    double y = (double)yi;
+                    sf += acq_win_f[(acq_win_i + k) % LOCK_WIN_N];
+                    sy += y;
+                    sxy += (double)k * y;
+                }
+                const double wn = (double)LOCK_WIN_N;
+                const double sx = wn * (wn - 1.0) / 2.0;
+                const double sxx = (wn - 1.0) * wn * (2.0 * wn - 1.0) / 6.0;
+                win_mean = sy / wn;
+                win_slope = (wn * sxy - sx * sy) / (wn * sxx - sx * sx); /* ns per 1 s sample = ppb */
+                /* Frequency the PHC needs = average applied over the window minus
+                 * the residual drift measured under it (PHC fast => slope > 0). */
+                win_freq = sf / wn - win_slope;
+                double am = (win_mean < 0.0) ? -win_mean : win_mean;
+                double as = (win_slope < 0.0) ? -win_slope : win_slope;
+                win_ok = in_band && (am < (double)LOCK_OFFSET_NS) && (as < LOCK_WIN_SLOPE_PPB);
+            }
             bool phase_ok = (llabs(offset) < LOCK_OFFSET_NS);
             bool freq_ok = (prev_acq_offset == INT64_MIN) ||
                            (llabs(offset - prev_acq_offset) < LOCK_FREQ_DELTA_NS);
             prev_acq_offset = offset;
 
-            if (phase_ok && freq_ok)
+            bool rule_step = phase_ok && freq_ok;
+            bool rule_lock = rule_step && (++stable_count > LOCK_THRESHOLD);
+            if (rule_lock || win_ok)
             {
-                if (++stable_count > LOCK_THRESHOLD)
                 {
+                    if (!rule_lock)
+                    {
+                        /* Hand the slow loop the window-averaged frequency, not the
+                         * instantaneous value (which carries the last noisy sample's
+                         * proportional kick). The 9-sample path is unchanged. */
+                        ESP_LOGW("SERVO",
+                                 "LOCK by %d-sample window: mean=%.0f ns slope=%.0f ppb freq=%.0f ppb (was %.0f)",
+                                 LOCK_WIN_N, win_mean, win_slope, win_freq, g_freq_ppb);
+                        g_freq_ppb = win_freq;
+                        if (g_freq_ppb > SERVO_FREQ_LIMIT_PPB)
+                            g_freq_ppb = SERVO_FREQ_LIMIT_PPB;
+                        if (g_freq_ppb < -SERVO_FREQ_LIMIT_PPB)
+                            g_freq_ppb = -SERVO_FREQ_LIMIT_PPB;
+                        adj_acq_ppb = (int32_t)g_freq_ppb;
+                        if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_acq_ppb))
+                            atomic_store(&g_freq_ppb_hw, adj_acq_ppb);
+                    }
                     ESP_LOGW("SERVO",
                              "LOCKED (offset=%lld ns, phase+freq converged %d samples, adj=%ld ppb)",
                              (long long)offset, stable_count, (long)adj_acq_ppb);
@@ -2918,7 +3371,7 @@ static void servo_task(void *arg)
                     g_ever_locked = true;
                 }
             }
-            else
+            else if (!rule_step)
             {
                 if ((stable_count & 0x03) == 0)
                 {
@@ -2927,7 +3380,7 @@ static void servo_task(void *arg)
                              (long long)offset,
                              phase_ok ? "OK" : "FAIL",
                              freq_ok ? "OK" : "FAIL",
-                             (long long)adj_acq_ppb,
+                             (long)adj_acq_ppb,
                              g_integral);
                 }
                 stable_count = 0;
@@ -2938,12 +3391,200 @@ static void servo_task(void *arg)
 
         case SERVO_LOCKED:
         {
-            int64_t raw_offset = (int64_t)pps - (int64_t)gnss_pps_snap;
+            if (!pps_plausible_snap)
+                continue; /* garbage PHC capture (see pps_task) */
+            int64_t raw_offset = (int64_t)pps - (((int64_t)pps + 500000000LL) / 1000000000LL) * 1000000000LL;
 
 #define HARD_REJECT_NS 100000LL /* 100 µs */
-            int64_t reference = (g_avg_count > 0)
+#if HOLDOVER_FREEZE_FREQ
+            if (g_holdover)
+            {
+                double hold_ppb = -(SERVO_KI_SLOW * g_integral);
+                if (hold_ppb > SERVO_FREQ_LIMIT_PPB)
+                    hold_ppb = SERVO_FREQ_LIMIT_PPB;
+                if (hold_ppb < -SERVO_FREQ_LIMIT_PPB)
+                    hold_ppb = -SERVO_FREQ_LIMIT_PPB;
+                if (g_freq_ppb != hold_ppb)
+                {
+                    g_freq_ppb = hold_ppb;
+                    int32_t adj_h = (int32_t)g_freq_ppb;
+                    if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_h))
+                        atomic_store(&g_freq_ppb_hw, adj_h);
+                }
+                continue; /* free-run on the learned frequency; no phase steering */
+            }
+#endif
+            if (realign_pending && realign_slew_left > 0)
+            {
+                if (--realign_slew_left == 0)
+                {
+                    /* slew done: back to the learned crystal correction, resume the loop */
+                    g_freq_ppb = -(SERVO_KI_SLOW * g_integral);
+                    if (g_freq_ppb > SERVO_FREQ_LIMIT_PPB)
+                        g_freq_ppb = SERVO_FREQ_LIMIT_PPB;
+                    if (g_freq_ppb < -SERVO_FREQ_LIMIT_PPB)
+                        g_freq_ppb = -SERVO_FREQ_LIMIT_PPB;
+                    int32_t adj_end = (int32_t)g_freq_ppb;
+                    if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_end))
+                        atomic_store(&g_freq_ppb_hw, adj_end);
+                    avg_reset();
+                    median_filter_reset();
+                    g_last_offset = 0;
+                    g_consecutive_rejects = 0;
+                    memset(g_lock_qual_ring, 0, sizeof(g_lock_qual_ring));
+                    g_lock_qual_idx = 0;
+                    g_lock_qual_count = 0;
+                    g_lock_acquired_ms = esp_timer_get_time() / 1000; /* settle window starts now */
+                    realign_pending = false;
+                    ESP_LOGI("SERVO", "REALIGN: slew complete (residual now %lld ns)", (long long)raw_offset);
+                }
+                continue;
+            }
+            if (realign_pending)
+            {
+                int64_t now_ms = esp_timer_get_time() / 1000;
+                if (now_ms - realign_start_ms > REALIGN_TIMEOUT_MS)
+                {
+                    ESP_LOGE("SERVO", "REALIGN: no consistent phase within %d s after holdover -- full re-acquire",
+                             REALIGN_TIMEOUT_MS / 1000);
+                    realign_pending = false;
+                    state = SERVO_UNLOCKED;
+                    g_phc_residual_measured = false;
+                    g_integral = 0;
+                    g_freq_ppb = 0;
+                    stable_count = 0;
+                    prev_acq_offset = INT64_MIN;
+                    acq_win_n = 0;
+                    acq_win_seen = 0;
+                    measure_count = 0;
+                    offset_acc = 0;
+                    median_filter_reset();
+                    avg_reset();
+                    g_last_offset = 0;
+                    g_consecutive_rejects = 0;
+                    led_set_state(LED_STATE_ACQUIRING);
+                    g_lock_start_ms = 0;
+                    g_lock_acquired_ms = 0;
+                    g_settled_after_holdover = false;
+                    continue;
+                }
+                if (llabs(raw_offset) >= REALIGN_MAX_NS)
+                {
+                    realign_n = 0; /* phase far off: not a realign case (very long outage) */
+                    continue;
+                }
+                realign_buf[realign_n++] = raw_offset;
+                int64_t mn = realign_buf[0], mx = realign_buf[0];
+                for (int i = 1; i < realign_n; i++)
+                {
+                    if (realign_buf[i] < mn)
+                        mn = realign_buf[i];
+                    if (realign_buf[i] > mx)
+                        mx = realign_buf[i];
+                }
+                if (mx - mn > REALIGN_SPREAD_NS)
+                {
+                    realign_buf[0] = raw_offset; /* inconsistent: restart from this sample */
+                    realign_n = 1;
+                    continue;
+                }
+                if (realign_n < REALIGN_SAMPLES)
+                    continue;
+                int64_t srt[REALIGN_SAMPLES];
+                memcpy(srt, realign_buf, sizeof(srt));
+                for (int i = 1; i < REALIGN_SAMPLES; i++)
+                    for (int j = i; j > 0 && srt[j] < srt[j - 1]; j--)
+                    {
+                        int64_t tmp = srt[j];
+                        srt[j] = srt[j - 1];
+                        srt[j - 1] = tmp;
+                    }
+                int64_t err = (srt[REALIGN_SAMPLES / 2 - 1] + srt[REALIGN_SAMPLES / 2]) / 2;
+                bool stepped = false;
+                if (llabs(err) > REALIGN_MIN_NS && llabs(err) <= REALIGN_STEP_NS)
+                {
+                    /* Slew the error out: hold learned + slew for n whole servo cycles. */
+                    int n = (int)((llabs(err) + REALIGN_SLEW_MAX_PPB - 1) / REALIGN_SLEW_MAX_PPB);
+                    if (n < 1)
+                        n = 1;
+                    double learned = -(SERVO_KI_SLOW * g_integral);
+                    double slew = -(double)err / (double)n; /* ppb for n seconds = -err ns */
+                    g_freq_ppb = learned + slew;
+                    if (g_freq_ppb > SERVO_FREQ_LIMIT_PPB)
+                        g_freq_ppb = SERVO_FREQ_LIMIT_PPB;
+                    if (g_freq_ppb < -SERVO_FREQ_LIMIT_PPB)
+                        g_freq_ppb = -SERVO_FREQ_LIMIT_PPB;
+                    int32_t adj_sl = (int32_t)g_freq_ppb;
+                    if (!servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_sl))
+                    {
+                        realign_n = 0; /* EMAC restarting: try again */
+                        continue;
+                    }
+                    atomic_store(&g_freq_ppb_hw, adj_sl);
+                    realign_slew_left = n;
+                    ESP_LOGW("SERVO", "REALIGN after holdover: phase error %lld ns (spread %lld ns) -> slewing %d s at %+.0f ppb",
+                             (long long)err, (long long)(mx - mn), n, slew);
+                    continue; /* stays pending (class 7) until the slew is done */
+                }
+                if (llabs(err) > REALIGN_STEP_NS)
+                {
+                    /* Step relative to the PHC's CURRENT value (read, then set), like the
+                     * EMAC-restart restore: the error is then the ioctl latency, not the
+                     * servo's wake-up delay after the PPS edge. */
+                    struct timespec ts_now;
+                    emac_get_time(&ts_now);
+                    int64_t now_ns = (int64_t)ts_now.tv_sec * 1000000000LL + ts_now.tv_nsec - err;
+                    eth_mac_time_t t = {
+                        .seconds = (uint32_t)(now_ns / 1000000000LL),
+                        .nanoseconds = (uint32_t)(now_ns % 1000000000LL),
+                    };
+                    if (!servo_phc_ioctl(ETH_MAC_ESP_CMD_S_PTP_TIME, &t))
+                    {
+                        realign_n = 0; /* EMAC restarting: try again */
+                        continue;
+                    }
+                    taskENTER_CRITICAL(&g_servo_spinlock);
+                    g_phc_step_gen++;
+                    taskEXIT_CRITICAL(&g_servo_spinlock);
+                    /* A step lands a few tens of us off (PHC write latency): measure
+                     * the residual again and slew it out before resuming the loop --
+                     * resuming at once made the slow loop overshoot it (to ~+30 us)
+                     * while the 32-sample average already looked converged. */
+                    ESP_LOGW("SERVO", "REALIGN after holdover: phase error %lld ns -> PHC stepped; measuring the residual",
+                             (long long)err);
+                    realign_n = 0;
+                    continue;
+                }
+                /* keep only the learned crystal correction (integral term) */
+                g_freq_ppb = -(SERVO_KI_SLOW * g_integral);
+                if (g_freq_ppb > SERVO_FREQ_LIMIT_PPB)
+                    g_freq_ppb = SERVO_FREQ_LIMIT_PPB;
+                if (g_freq_ppb < -SERVO_FREQ_LIMIT_PPB)
+                    g_freq_ppb = -SERVO_FREQ_LIMIT_PPB;
+                int32_t adj_rl = (int32_t)g_freq_ppb;
+                if (servo_phc_ioctl(ETH_MAC_ESP_CMD_ADJ_PTP_TIME, &adj_rl))
+                    atomic_store(&g_freq_ppb_hw, adj_rl);
+                ESP_LOGW("SERVO", "REALIGN after holdover: phase error %lld ns (spread %lld ns) -> %s, freq %.0f ppb",
+                         (long long)err, (long long)(mx - mn), stepped ? "PHC stepped" : "no step", g_freq_ppb);
+                avg_reset();
+                median_filter_reset();
+                g_last_offset = 0;
+                g_consecutive_rejects = 0;
+                memset(g_lock_qual_ring, 0, sizeof(g_lock_qual_ring));
+                g_lock_qual_idx = 0;
+                g_lock_qual_count = 0;
+                g_lock_acquired_ms = now_ms; /* settle window starts now */
+                realign_pending = false;
+                continue;
+            }
+            /* While the averager warms up (< 8 samples) gate against 0: every way
+             * into SERVO_LOCKED (9-sample rule, window fallback, holdover realign)
+             * guarantees |phase| < 20 us, so a warm-up sample 100 us away is a glitch
+             * edge. Ungated, one such sample poisoned the average and wedged the
+             * servo 45 s later. */
+            int64_t reference = (g_avg_count >= 8)
                                     ? g_avg_sum / (int64_t)g_avg_count
-                                    : raw_offset;
+                                    : 0;
 
             /* Only apply the reject gate once the averager has enough samples
              * for a stable reference. 8 is roughly a quarter of AVG_WINDOW (32);
@@ -2952,10 +3593,13 @@ static void servo_task(void *arg)
              * throw away good samples during warm-up. Once we cross 8, the
              * reference is statistically representative enough to distinguish
              * a real 100 µs outlier from ordinary PPS noise. */
-            if (g_avg_count >= 8 && llabs(raw_offset - reference) > HARD_REJECT_NS)
+            if (llabs(raw_offset - reference) > HARD_REJECT_NS)
             {
                 g_total_rejects++;
                 g_consecutive_rejects++; /* visible on OLED screen 2 */
+                g_phase_converged = false;
+                if (g_consecutive_rejects >= CLASS6_DEMOTE_REJECTS)
+                    g_phase_degraded = true;
                 if ((g_total_rejects & 0x07) == 1)
                 {
                     ESP_LOGW("SERVO",
@@ -2992,6 +3636,8 @@ static void servo_task(void *arg)
                     g_freq_ppb = 0;
                     stable_count = 0;
                     prev_acq_offset = INT64_MIN;
+                    acq_win_n = 0;
+                    acq_win_seen = 0;
                     measure_count = 0;
                     offset_acc = 0;
                     median_filter_reset();
@@ -3066,7 +3712,8 @@ static void servo_task(void *arg)
                 atomic_store(&g_freq_ppb_hw, adj_ppb);
 
             g_last_offset = offset;
-
+            g_phase_converged = (g_avg_count >= AVG_WINDOW) && (llabs(offset) < CLASS6_MAX_OFFSET_NS);
+            g_phase_degraded = (llabs(offset) > CLASS6_DEMOTE_NS);
 #define LOCK_LOSS_AVG_NS 1000000LL
 #define LOCK_LOSS_AVG_COUNT 60
             static int avg_bad_count = 0;
@@ -3086,6 +3733,8 @@ static void servo_task(void *arg)
                     g_freq_ppb = 0;
                     stable_count = 0;
                     prev_acq_offset = INT64_MIN;
+                    acq_win_n = 0;
+                    acq_win_seen = 0;
                     measure_count = 0;
                     offset_acc = 0;
                     median_filter_reset();
@@ -3397,6 +4046,33 @@ static void gnss_signal_task(void *arg)
 /* ─────────────────────────────────────────────────────────────────────────
  * Tasks
  * ───────────────────────────────────────────────────────────────────────── */
+/* BMCA announce-timeout reclaim (moved out of ptp_rx_task unchanged, plus the
+ * listening rule): while not master, take the master role when no Announce
+ * has been heard for ANNOUNCE_TIMEOUT_SEC. While the link is down nothing can
+ * be heard, so the window restarts: after boot or a link drop the box listens
+ * for a full timeout on a live link before it may transmit. Only ptp_rx_task
+ * calls this (single writer of g_i_am_master). */
+static void bmca_timeout_check(void)
+{
+    if (g_i_am_master)
+        return;
+    time_t now = time(NULL);
+    if (!atomic_load(&g_link_up))
+    {
+        g_last_announce_rx = now; /* listening restarts at link-up */
+        return;
+    }
+    if ((now - g_last_announce_rx) > ANNOUNCE_TIMEOUT_SEC)
+    {
+        bmca_view_write_begin();
+        g_bmca_view.peer_valid = false; /* the peer is gone */
+        g_bmca_view.peer_better = false;
+        g_bmca_view.decided_by = BMCA_FIELD_NONE;
+        bmca_view_write_end();
+        bmca_set_role(true, BMCA_REASON_ANNOUNCE_TIMEOUT, NULL, BMCA_FIELD_NONE);
+    }
+}
+
 static void ptp_rx_task(void *arg)
 {
     /* Wait for L2TAP to be ready (set by timing_core_bringup at init, before
@@ -3405,6 +4081,7 @@ static void ptp_rx_task(void *arg)
     {
         vTaskDelay(pdMS_TO_TICKS(500));
     }
+    g_last_announce_rx = time(NULL); /* LISTENING starts now (see g_i_am_master) */
 
     // ESP_LOGI(TAG, "ptp_rx_task started");
 
@@ -3535,14 +4212,7 @@ static void ptp_rx_task(void *arg)
         /* BMCA announce-timeout reclaim: if we're currently acting as a slave
          * and haven't heard an Announce from our best master for longer than
          * ANNOUNCE_TIMEOUT_SEC, reclaim the master role. */
-        if (!g_i_am_master)
-        {
-            time_t now = time(NULL);
-            if ((now - g_last_announce_rx) > ANNOUNCE_TIMEOUT_SEC)
-            {
-                g_i_am_master = true;
-            }
-        }
+        bmca_timeout_check();
 
         // ESP_LOGW("PTP_RX_TASK", "PTP RX task is working");
     } /* end of while(1) */
@@ -3558,7 +4228,11 @@ static void ptp_tx_task(void *arg)
             atomic_load(&g_l2tap_ready) &&
             g_i_am_master)
         {
-            send_sync_and_followup();
+            /* No Sync/Follow_Up until the PHC holds GNSS time (first lock this
+             * boot; the clock stops advertising class 248). Announce still goes
+             * out so BMCA keeps working; slaves just get no 1970 timestamps. */
+            if (g_ever_locked)
+                send_sync_and_followup();
 
             static int announce_div = 0;
             if (++announce_div >= PTP_ANNOUNCE_DIV)
@@ -3600,6 +4274,10 @@ static void heap_monitor_task(void *arg)
     size_t baseline_free = heap_caps_get_free_size(MALLOC_CAP_INTERNAL);
     ESP_LOGI("HEAP", "Baseline free internal heap: %u bytes",
              (unsigned)baseline_free);
+    /* Published for status_handler's heap_leak field. baseline_free is never
+     * 0 in practice (there's always some internal heap free), so 0 stays a
+     * safe "not yet measured" sentinel for the reader side. */
+    atomic_store(&g_heap_baseline_free, (uint32_t)baseline_free);
 
     int sample_count = 0;
 
@@ -3638,7 +4316,7 @@ static void heap_monitor_task(void *arg)
             ESP_LOGI("HEAP", "==============================================");
         }
 
-        vTaskDelay(pdMS_TO_TICKS(60000));
+        vTaskDelay(pdMS_TO_TICKS(HEAP_MON_INTERVAL_MS));
         // ESP_LOGW("HEAP", "HEAP MONITOR WORKING - free=%u bytes", (unsigned)free_internal);
     }
 }
@@ -3848,6 +4526,12 @@ static void watchdog_task(void *arg)
 
         uint64_t now_ms = esp_timer_get_time() / 1000;
 
+        /* For the JSON "wdt" object: exactly one alert increment per pass
+         * that found a problem (not per condition), decided after both
+         * checks below have run. */
+        bool wdt_problem = false;
+        wdt_state_t wdt_new_state = WDT_OK;
+
         /* ───── Check 1: PHC freeze ─────
          * Monitor the PHC ITSELF (hardware seconds counter, read via
          * emac_get_time), NOT g_pps_capture_ns. The PPS capture only
@@ -3875,6 +4559,9 @@ static void watchdog_task(void *arg)
 
             if (phc_frozen && elapsed > 30000)
             {
+                wdt_problem = true;
+                wdt_new_state = WDT_PHC_FROZEN;
+
                 ESP_LOGW("WDT",
                          "PHC frozen for %llu ms (phc_s=%llu) — health degraded",
                          (unsigned long long)elapsed,
@@ -3892,6 +4579,7 @@ static void watchdog_task(void *arg)
                 }
                 else if (g_emac_restart_count >= 10)
                 {
+                    wdt_new_state = WDT_RESTART_LIMIT;
                     ESP_LOGE("WDT",
                              "EMAC restart limit reached — system needs reboot");
                 }
@@ -3919,6 +4607,10 @@ static void watchdog_task(void *arg)
         {
             static uint64_t last_heap_restart_ms = 0;
 
+            wdt_problem = true;
+            if (wdt_new_state == WDT_OK)
+                wdt_new_state = WDT_HEAP_CRITICAL;
+
             ESP_LOGE("WDT",
                      "Critical heap pressure (%u bytes free) — attempting recovery",
                      (unsigned)free_now);
@@ -3936,6 +4628,14 @@ static void watchdog_task(void *arg)
         //          phc_frozen ? "FROZEN" : "OK",
         //          (unsigned)free_now,
         //          (unsigned long)g_emac_restart_count);
+
+        atomic_store(&g_wdt_state, (uint8_t)wdt_new_state);
+        if (wdt_problem)
+        {
+            atomic_fetch_add(&g_wdt_alerts, 1);
+            atomic_store(&g_wdt_last_alert_s,
+                        (uint32_t)((now_ms - (uint64_t)g_boot_time_ms) / 1000));
+        }
     }
 }
 
@@ -4041,7 +4741,7 @@ static void led_task(void *arg)
 
 void led_start(void)
 {
-    xTaskCreate(led_task, "led", LED_TASK_STACK, NULL, LED_TASK_PRIO, NULL);
+    task_create_tracked(led_task, "led", LED_TASK_STACK, NULL, LED_TASK_PRIO, NULL);
 }
 
 static void pps_led_task(void *arg)
@@ -4271,12 +4971,7 @@ static void render_screen_main(void)
      * POST_HOLDOVER_SETTLE_MS window after the phase reference was last
      * re-seated, which is exactly the window where PTP still advertises
      * holdover while the box is operationally LOCKED. */
-    bool settling = false;
-    if (!g_holdover && !g_settled_after_holdover && g_lock_acquired_ms != 0)
-    {
-        int64_t now_ms = esp_timer_get_time() / 1000;
-        settling = (now_ms - g_lock_acquired_ms) < POST_HOLDOVER_SETTLE_MS;
-    }
+    bool settling = (!g_holdover && g_ever_locked && holdover_advert_ro(NULL));
 
     char buf[32];
 
@@ -4387,10 +5082,8 @@ static void render_screen_servo(void)
         disp_cc = 248;
     else if (g_holdover)
         disp_cc = 7;
-    else if (!g_settled_after_holdover &&
-             (g_lock_acquired_ms == 0 ||
-              (now_ms - g_lock_acquired_ms) < POST_HOLDOVER_SETTLE_MS))
-        disp_cc = 7; /* not-yet-settled: never-acquired-this-cycle, or inside settle window */
+    else if (holdover_advert_ro(NULL))
+        disp_cc = 7; /* settling, not converged, or currently degraded */
     else
         disp_cc = 6;
 
@@ -5166,7 +5859,7 @@ static bool phc_start_blocking(void)
 static void gnss_uart_init(void)
 {
     uart_config_t cfg = {
-        .baud_rate = 115200,
+        .baud_rate = GNSS_UART_BAUD,
         .data_bits = UART_DATA_8_BITS,
         .parity = UART_PARITY_DISABLE,
         .stop_bits = UART_STOP_BITS_1,
@@ -5223,6 +5916,103 @@ static void timing_config_error_cb(const char *failed_step_name)
 }
 
 /* ═════════════════════════════════════════════════════════════════════════
+ * SECTION: Boot-time static facts + config JSON
+ *
+ * Everything here is either a hardware constant (flash size/mode, heap
+ * capability totals, CPU MHz) or a compile-time #define. Both classes are
+ * read/formatted exactly ONCE, at boot, from app_main — never on the httpd
+ * hot path (rule 1.2.2: no flash access at runtime). g_config_json holds the
+ * pre-rendered "config":{...} JSON fragment; status_handler appends it
+ * verbatim.
+ * ═════════════════════════════════════════════════════════════════════════ */
+typedef struct
+{
+    uint32_t cpu_mhz;
+    uint32_t flash_bytes;
+    char flash_mode[8]; /* e.g. "dio" */
+    uint32_t flash_mhz;
+    size_t heap_internal_total;
+    long rtc_heap_total; /* -1 => emit null */
+    long tcm_heap_total; /* -1 => emit null */
+} boot_facts_t;
+static boot_facts_t g_boot_facts;
+
+static void boot_facts_collect(void)
+{
+    g_boot_facts.cpu_mhz = esp_rom_get_cpu_ticks_per_us();
+
+    uint32_t flash_sz = 0;
+    esp_flash_get_size(NULL, &flash_sz);
+    g_boot_facts.flash_bytes = flash_sz;
+
+    strlcpy(g_boot_facts.flash_mode, CONFIG_ESPTOOLPY_FLASHMODE,
+           sizeof(g_boot_facts.flash_mode));
+    g_boot_facts.flash_mhz = CONFIG_ESPTOOLPY_FLASHFREQ_VAL;
+
+    g_boot_facts.heap_internal_total = heap_caps_get_total_size(MALLOC_CAP_INTERNAL);
+
+    /* Heap-MANAGED totals (what the allocator owns for this capability), not
+     * physical region sizes — the dashboard's Memory-card labels say so. */
+#ifdef MALLOC_CAP_RTCRAM
+    {
+        size_t t = heap_caps_get_total_size(MALLOC_CAP_RTCRAM);
+        g_boot_facts.rtc_heap_total = (t > 0) ? (long)t : -1;
+    }
+#else
+    g_boot_facts.rtc_heap_total = -1;
+#endif
+
+#ifdef MALLOC_CAP_TCM
+    {
+        size_t t = heap_caps_get_total_size(MALLOC_CAP_TCM);
+        g_boot_facts.tcm_heap_total = (t > 0) ? (long)t : -1;
+    }
+#else
+    g_boot_facts.tcm_heap_total = -1;
+#endif
+}
+
+/* Pre-formatted "config":{...} JSON fragment, built once at boot. Every
+ * value comes from the #define the code actually uses at its real call
+ * site — never retyped. transport/delay_mechanism/two_step are fixed by
+ * design in this firmware (L2 Annex F only, E2E only; every Sync is sent
+ * with PTP_FLAG_TWO_STEP in send_sync_and_followup(), so two_step is always
+ * true — there is no on/off macro to derive it from, just that literal
+ * flag). Priorities are runtime state, not config — they're reported in
+ * bmca.local instead (see web_append_bmca in web_server.h). */
+static char g_config_json[1024];
+
+static void config_json_build(void)
+{
+    snprintf(g_config_json, sizeof(g_config_json),
+        "\"config\":{"
+        "\"ptp\":{\"domain\":%d,\"transport\":\"L2\",\"delay_mechanism\":\"E2E\",\"two_step\":true,"
+                 "\"sync_interval_ms\":%d,\"announce_interval_ms\":%d,"
+                 "\"announce_timeout_s\":%d,\"bmca_stability_threshold\":%d},"
+        "\"servo\":{\"acq_kp\":%g,\"acq_ki\":%g,"
+                   "\"lock_kp\":%g,\"lock_ki\":%g,\"lock_kd\":%g,\"lock_kd_enabled\":%s,"
+                   "\"avg_window\":%d,\"lock_qual_window\":%d,\"lock_qual_good_ns\":%d,"
+                   "\"reject_reacquire_at\":%d,\"holdover_timeout_s\":%d,\"post_holdover_settle_ms\":%d},"
+        "\"hw\":{\"pps_gpio\":%d,\"pps_led_gpio\":%d,\"pps_led_on_ms\":%d,\"button_gpio\":%d,"
+               "\"gnss_uart\":%d,\"gnss_baud\":%d,\"display_screens\":%d},"
+        "\"net\":{\"dhcp_fallback_timeout_ms\":%d,\"slaves_max\":%d,\"slave_timeout_ms\":%d},"
+        "\"mon\":{\"heap_mon_interval_ms\":%d}"
+        "}",
+        (int)PTP_DOMAIN,
+        (int)PTP_SYNC_INTERVAL_MS, (int)PTP_ANNOUNCE_INTERVAL_MS,
+        (int)ANNOUNCE_TIMEOUT_SEC, (int)BMCA_STABILITY_THRESHOLD,
+        (double)SERVO_KP, (double)SERVO_KI,
+        (double)SERVO_KP_SLOW, (double)SERVO_KI_SLOW, (double)SERVO_KD_SLOW,
+        SERVO_KD_ENABLE ? "true" : "false",
+        (int)AVG_WINDOW, (int)LOCK_QUAL_WINDOW, (int)LOCK_QUAL_GOOD_NS,
+        (int)REJECT_STREAK_REACQUIRE, (int)HOLDOVER_TIMEOUT_SEC, (int)POST_HOLDOVER_SETTLE_MS,
+        (int)PPS_GPIO, (int)PPS_LED_GPIO, (int)PPS_LED_ON_MS, (int)DISPLAY_BUTTON_GPIO,
+        (int)GNSS_UART_NUM, (int)GNSS_UART_BAUD, (int)DISPLAY_NUM_SCREENS,
+        (int)DHCP_FALLBACK_TIMEOUT_MS, (int)SLAVE_TRACK_MAX, (int)SLAVE_TIMEOUT_MS,
+        (int)HEAP_MON_INTERVAL_MS);
+}
+
+/* ═════════════════════════════════════════════════════════════════════════
  * SECTION: app_main
  *
  * Brings up the OLED, records boot time, launches the button/display tasks,
@@ -5265,8 +6055,8 @@ void app_main(void)
     g_boot_time_ms = esp_timer_get_time() / 1000;
 
     /* Launch button + display tasks (low priority — never block timing-critical work) */
-    xTaskCreate(button_task, "btn", BUTTON_TASK_STACK, NULL, BUTTON_TASK_PRIO, NULL);
-    xTaskCreate(display_task, "display", DISPLAY_TASK_STACK, NULL, DISPLAY_TASK_PRIO, NULL);
+    task_create_tracked(button_task, "btn", BUTTON_TASK_STACK, NULL, BUTTON_TASK_PRIO, NULL);
+    task_create_tracked(display_task, "display", DISPLAY_TASK_STACK, NULL, DISPLAY_TASK_PRIO, NULL);
 
     /* ─────────────────────────────────────────────────────────────────────
      * Order matters: every dependency of pps_isr_handler must exist BEFORE
@@ -5298,7 +6088,7 @@ void app_main(void)
      * 500 ms — it touches no netif state before ethernet_init sets it. */
     g_got_ip_sem = xSemaphoreCreateBinary();
     g_link_down_sem = xSemaphoreCreateBinary();
-    xTaskCreate(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
+    task_create_tracked(dhcp_fallback_task, "dhcp_fb", 3072, NULL, 2, NULL);
 
     /* Ethernet driver init + start. Will not block waiting for link.
      * Fatal driver/netif failures abort inside ethernet_init via
@@ -5335,7 +6125,7 @@ void app_main(void)
      * disciplines to GNSS, independent of link. */
     led_start();
     led_set_state(LED_STATE_NO_LINK);
-    xTaskCreate(pps_led_task, "pps_led", 2048, NULL, 1, NULL);
+    task_create_tracked(pps_led_task, "pps_led", PPS_LED_TASK_STACK, NULL, 1, NULL);
 
     /* Bring up the timing core NOW — driver is started, so the PHC and L2TAP
      * can come up without waiting for a peer/link. This is the architectural
@@ -5370,6 +6160,7 @@ void app_main(void)
      *
      *   bool promisc = true;
      *   esp_eth_ioctl(g_eth_hndl, ETH_CMD_S_PROMISCUOUS, &promisc);
+     *   g_promiscuous = true;
      *   ESP_LOGI("ETH", "Promiscuous mode: ON");
      */
 
@@ -5395,21 +6186,49 @@ void app_main(void)
      * task (5), so receiving and Sync cadence both win over Delay_Resp under
      * flood. */
     g_delay_resp_q = xQueueCreate(DELAY_RESP_Q_DEPTH, sizeof(delay_resp_job_t));
-    xTaskCreate(delay_resp_task, "dresp", 4096, NULL, 6, NULL);
+    task_create_tracked(delay_resp_task, "dresp", 4096, NULL, 6, NULL);
 
-    xTaskCreate(ptp_rx_task, "ptp_rx", 8192, NULL, 7, NULL);
-    xTaskCreate(ptp_tx_task, "ptp_tx", 8192, NULL, 5, NULL);
+    task_create_tracked(ptp_rx_task, "ptp_rx", 8192, NULL, 7, NULL);
+    task_create_tracked(ptp_tx_task, "ptp_tx", 8192, NULL, 5, NULL);
 
-    xTaskCreate(gnss_task, "gnss", 6144, NULL, 5, NULL);
-    xTaskCreate(gnss_signal_task, "gnss_sig", 3072, NULL, 1, NULL);
-    xTaskCreate(servo_task, "servo", 6144, NULL, 6, &servo_task_handle);
-    xTaskCreate(pps_task, "pps_task", 4096, NULL, 7, NULL);
+    /* Role-change logging, off the receive hot path — see bmca_set_role /
+     * bmca_log_task. Low priority: it only drains a ring buffer every
+     * 500 ms, never anything time-critical.
+     *
+     * 4096 bytes, not the 2048 the original instrumentation plan called for:
+     * bench-tested on real hardware, a genuine role change (a second PTP
+     * master on the LAN) triggers the event log's ESP_LOGI call — 8 args
+     * incl. %lld/%s/%02X — and newlib's vfprintf on this toolchain needs
+     * more headroom than that. Confirmed by a hardware stack-guard fault
+     * (Core panic, "Stack protection fault") inside
+     * xQueueTakeMutexRecursive/vfprintf with the 2048-byte size. Matches
+     * every other task in this file that logs multi-argument lines
+     * (heap_mon/dhcp_fb=3072, wdt=4096) — only the trivial single-%d
+     * loggers (led, btn) get away with 2048. */
+    task_create_tracked(bmca_log_task, "bmca_log", 4096, NULL, 1, NULL);
 
-    xTaskCreate(heap_monitor_task, "heap_mon", 3072, NULL, 1, NULL);
+    task_create_tracked(gnss_task, "gnss", 6144, NULL, 5, NULL);
+    task_create_tracked(gnss_signal_task, "gnss_sig", 3072, NULL, 1, NULL);
+    task_create_tracked(servo_task, "servo", 6144, NULL, 6, &servo_task_handle);
+    task_create_tracked(pps_task, "pps_task", 4096, NULL, 7, NULL);
 
-    xTaskCreate(watchdog_task, "wdt", 4096, NULL, 1, NULL);
+    task_create_tracked(heap_monitor_task, "heap_mon", 3072, NULL, 1, NULL);
+
+    task_create_tracked(watchdog_task, "wdt", 4096, NULL, 1, NULL);
+
+    /* This task ("main") and the httpd task started below never go through
+     * task_create_tracked — register their stack sizes directly so the
+     * dashboard's task table doesn't show them with a null stack. */
+    task_reg_add("main", CONFIG_ESP_MAIN_TASK_STACK_SIZE);
 
     ESP_LOGI("MAIN", "All tasks launched. Waiting for Ethernet link...");
+
+    /* Boot-time facts (flash size/mode, heap capability totals, CPU MHz) and
+     * the derived "config" JSON fragment: both are constant for the life of
+     * the process, so collect/format them once here, before the httpd task
+     * (which reads them on every /api/status request) starts. */
+    boot_facts_collect();
+    config_json_build();
 
     /* Optional: also kick off DHCP-fallback watcher so it runs in background
      * once link comes up. The IP event handler already handles this. */
